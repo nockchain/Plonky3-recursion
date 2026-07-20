@@ -39,7 +39,7 @@ mod tip5_spec;
 pub use air::{Tip5PermAir, tip5_perm_air_width};
 pub use air_circuit::{
     TIP5_CIRCUIT_EXTRA_MAIN_COLS, TIP5_CIRCUIT_PREP_WIDTH, TIP5_CTL_PREP_COLS, TIP5_DIGEST,
-    TIP5_RATE, TIP5_WIDTH, Tip5CircuitAir, Tip5CircuitRow,
+    TIP5_OUTPUT_CTL, TIP5_RATE, TIP5_WIDTH, Tip5CircuitAir, Tip5CircuitRow,
     build_tip5_circuit_main_with_mmcs_bits, build_tip5_circuit_preprocessed,
     generate_tip5_circuit_main, tip5_inputs_from_rows,
 };

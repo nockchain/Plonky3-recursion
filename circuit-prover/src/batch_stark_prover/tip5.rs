@@ -42,9 +42,10 @@ use p3_field::{Algebra, ExtensionField, PrimeCharacteristicRing, PrimeField64};
 use p3_goldilocks::Goldilocks;
 use p3_matrix::Matrix;
 use p3_tip5_circuit_air::{
-    NUM_ROUNDS, TABLE_ROWS, TIP5_CIRCUIT_PREP_WIDTH, TIP5_CTL_PREP_COLS, TIP5_RATE, TIP5_WIDTH,
-    Tip5CircuitAir, Tip5CircuitRow, build_tip5_circuit_main_with_mmcs_bits,
-    build_tip5_circuit_preprocessed, generate_tip5_circuit_main, tip5_inputs_from_rows,
+    NUM_ROUNDS, TABLE_ROWS, TIP5_CIRCUIT_PREP_WIDTH, TIP5_CTL_PREP_COLS, TIP5_OUTPUT_CTL,
+    TIP5_WIDTH, Tip5CircuitAir, Tip5CircuitRow,
+    build_tip5_circuit_main_with_mmcs_bits, build_tip5_circuit_preprocessed,
+    generate_tip5_circuit_main, tip5_inputs_from_rows,
 };
 use p3_uni_stark::{SymbolicExpression, SymbolicExpressionExt};
 use p3_util::log2_ceil_usize;
@@ -136,9 +137,9 @@ where
 }
 
 /// Per-op preprocessed CTL row width registered by the Tip5 NPO
-/// executor (`in_ctl[16] | in_idx[16] | out_idx[10] | out_ctl[10]
+/// executor (`in_ctl[16] | in_idx[16] | out_idx[16] | out_ctl[16]
 /// | mmcs_bit_ctl | mmcs_bit_idx`).
-const TIP5_OP_CTL_WIDTH: usize = TIP5_CTL_PREP_COLS; // 54
+const TIP5_OP_CTL_WIDTH: usize = TIP5_CTL_PREP_COLS; // 66
 
 /// Table prover for the Tip5 NPO. Single Goldilocks D=1 config.
 #[derive(Clone)]
@@ -418,11 +419,11 @@ where
         }
         let num_ops = prep_base.len() / TIP5_OP_CTL_WIDTH;
 
-        // CTL column offsets within one op's 54-col block.
+        // CTL column offsets within one op's 66-col block.
         let in_ctl_off = 0;
         let in_idx_off = in_ctl_off + TIP5_WIDTH;
         let out_idx_off = in_idx_off + TIP5_WIDTH;
-        let out_ctl_off = out_idx_off + TIP5_RATE;
+        let out_ctl_off = out_idx_off + TIP5_OUTPUT_CTL;
 
         let dup_wids = preprocessed.dup_npo_outputs.get(op_type);
 
@@ -430,7 +431,7 @@ where
         let mut resolved = prep_base.clone();
         for row in 0..num_ops {
             let base = row * TIP5_OP_CTL_WIDTH;
-            for j in 0..TIP5_RATE {
+            for j in 0..TIP5_OUTPUT_CTL {
                 let ctl = resolved[base + out_ctl_off + j];
                 if ctl != F::ZERO {
                     let idx = resolved[base + out_idx_off + j];
@@ -465,13 +466,13 @@ where
                     // `out_ctl` here already carries the resolved
                     // signed multiplicity; pass it through via the
                     // index/flag channel below.
-                    out_ctl: (0..TIP5_RATE).map(|_| false).collect(),
-                    output_indices: (0..TIP5_RATE)
+                    out_ctl: (0..TIP5_OUTPUT_CTL).map(|_| false).collect(),
+                    output_indices: (0..TIP5_OUTPUT_CTL)
                         .map(|i| F::as_canonical_u64(&resolved[base + out_idx_off + i]) as u32)
                         .collect(),
-                    mmcs_bit_ctl: resolved[base + out_ctl_off + TIP5_RATE] != F::ZERO,
+                    mmcs_bit_ctl: resolved[base + out_ctl_off + TIP5_OUTPUT_CTL] != F::ZERO,
                     mmcs_bit_index: F::as_canonical_u64(
-                        &resolved[base + out_ctl_off + TIP5_RATE + 1],
+                        &resolved[base + out_ctl_off + TIP5_OUTPUT_CTL + 1],
                     ) as u32,
                     mmcs_bit: false,
                 }
@@ -504,12 +505,12 @@ where
         // booleans / zeros for them since we passed `out_ctl=false`).
         let width = TIP5_CIRCUIT_PREP_WIDTH;
         let l_w = width - TIP5_CTL_PREP_COLS;
-        let ctl_out_ctl = TIP5_WIDTH + TIP5_WIDTH + TIP5_RATE;
+        let ctl_out_ctl = TIP5_WIDTH + TIP5_WIDTH + TIP5_OUTPUT_CTL;
         for (row, op_row) in (0..num_ops).map(|r| (r, r)) {
             let trace_row = TABLE_ROWS + row * NUM_ROUNDS + (NUM_ROUNDS - 1);
             let dst = trace_row * width + l_w + ctl_out_ctl;
             let src = op_row * TIP5_OP_CTL_WIDTH + out_ctl_off;
-            for j in 0..TIP5_RATE {
+            for j in 0..TIP5_OUTPUT_CTL {
                 full[dst + j] = resolved[src + j];
             }
         }

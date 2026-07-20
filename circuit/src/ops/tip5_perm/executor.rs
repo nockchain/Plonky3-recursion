@@ -250,13 +250,13 @@ impl Tip5PermExecutor {
     }
 
     /// Construct the circuit trace row (D=1): one CTL flag + witness
-    /// index per physical input slot (`WIDTH`=16) and per rate output
-    /// slot (`RATE`=10). Mirrors `build_base_trace_row` — the
+    /// index per physical input slot (`WIDTH`=16) and per returned output
+    /// slot. Capacity outputs are part of the chained Tip5 state. The
     /// single-row Tip5 AIR consumes the fully resolved `input_values`
-    /// (post chain ⊕ sibling ⊕ swap) and the CTL flags only; merkle /
-    /// mmcs_bit is recorded in a wrapper-owned main column so the AIR
-    /// can bind direction-aware input CTL to the same witness bit that
-    /// drove the Merkle swap.
+    /// (post chain ⊕ sibling ⊕ swap) and the CTL flags only; `mmcs_bit`
+    /// is recorded in a wrapper-owned main column so the AIR can bind
+    /// direction-aware input CTL to the same witness bit that drove the
+    /// Merkle swap.
     fn build_trace_row<F: Field>(
         &self,
         inputs: &[Vec<WitnessId>],
@@ -265,7 +265,7 @@ impl Tip5PermExecutor {
         mmcs_bit: bool,
     ) -> Tip5CircuitRow<F> {
         let width = self.config.width();
-        let rate = self.config.rate();
+        let output_ctl = width;
         let mut in_ctl = vec![false; width];
         let mut input_indices = vec![0u32; width];
         for i in 0..width {
@@ -277,9 +277,9 @@ impl Tip5PermExecutor {
             }
         }
 
-        let mut out_ctl = vec![false; rate];
-        let mut output_indices = vec![0u32; rate];
-        for i in 0..rate {
+        let mut out_ctl = vec![false; output_ctl];
+        let mut output_indices = vec![0u32; output_ctl];
+        for i in 0..output_ctl {
             if let Some(out_slot) = outputs.get(i)
                 && let [wid] = out_slot.as_slice()
             {
@@ -525,19 +525,17 @@ impl Tip5PermExecutor {
     }
 
     /// Emit the per-op preprocessed CTL columns for the Tip5 circuit
-    /// table: `in_ctl[16] | in_idx[16] | out_idx[10] | out_ctl[10]
+    /// table: `in_ctl[16] | in_idx[16] | out_idx[16] | out_ctl[16]
     /// | mmcs_bit_ctl | mmcs_bit_idx`.
     ///
     /// Input slots that are CTL-exposed are registered as
-    /// `WitnessChecks` **reads** (so the bus reader count / `ext_reads`
-    /// is incremented, exactly like Poseidon1 input limbs); output
-    /// slots are registered as **output indices** (creators whose
-    /// `out_ctl` multiplicity the `Tip5Preprocessor` later resolves
-    /// from `ext_reads`, exactly like Poseidon1 / Recompose). Only the
-    /// first `width` (16) input slots and `rate` (10) output slots are
-    /// registered as state CTL. The trailing `mmcs_bit` slot is also
-    /// registered as a direction-bit read so the AIR can bind the
-    /// direction-aware state selection to the circuit witness.
+    /// `WitnessChecks` readers. Output slots are registered as creators
+    /// whose `out_ctl` multiplicity is resolved from `ext_reads` by the
+    /// Tip5 preprocessor. Capacity outputs are included because Tip5
+    /// sponge chaining can feed them into later permutation inputs.
+    /// The trailing `mmcs_bit` slot is also registered as a direction-bit
+    /// read so the AIR can bind the direction-aware state selection to the
+    /// circuit witness.
     fn preprocess_ctl<F: Field>(
         &self,
         inputs: &[Vec<WitnessId>],
@@ -545,7 +543,7 @@ impl Tip5PermExecutor {
         preprocessed: &mut dyn PreprocessedWriter<F>,
     ) -> Result<(), CircuitError> {
         let width = self.config.width();
-        let rate = self.config.rate();
+        let output_ctl = width;
 
         // in_ctl[16]
         for inp in inputs.iter().take(width) {
@@ -568,8 +566,8 @@ impl Tip5PermExecutor {
                 });
             }
         }
-        // out_idx[10] — outputs are creators on the WitnessChecks bus.
-        for out in outputs.iter().take(rate) {
+        // out_idx[16] — returned outputs are creators on the WitnessChecks bus.
+        for out in outputs.iter().take(output_ctl) {
             if out.is_empty() {
                 preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
             } else if let [_] = out.as_slice() {
@@ -582,8 +580,8 @@ impl Tip5PermExecutor {
                 });
             }
         }
-        // out_ctl[10] — raw flag; preprocessor rewrites to n_reads / -1.
-        for out in outputs.iter().take(rate) {
+        // out_ctl[16] — raw flag; preprocessor rewrites to n_reads / -1.
+        for out in outputs.iter().take(output_ctl) {
             preprocessed.register_non_primitive_preprocessed_no_read(
                 &self.op_type,
                 &[F::from_bool(Self::limb_ctl_enabled(out))],

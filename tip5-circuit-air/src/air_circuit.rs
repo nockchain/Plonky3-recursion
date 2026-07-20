@@ -28,7 +28,7 @@
 //! Tip5 evaluation each, the rest inert padding. The matching preprocessed
 //! trace carries the verifier-fixed L-table/round-selector columns
 //! `[IS_TABLE, TIN, TOUT, IS_ROUND, ROUND[0..5]]` *and* the per-perm-row CTL
-//! columns `[in_ctl[16], in_idx[16], out_idx[10], out_ctl[10],
+//! columns `[in_ctl[16], in_idx[16], out_idx[16], out_ctl[16],
 //! mmcs_bit_ctl, mmcs_bit_idx]`.
 
 use alloc::vec::Vec;
@@ -46,25 +46,28 @@ use crate::air_lookup::{
 use crate::generation_lookup::generate_lookup_trace;
 use crate::tip5_spec::{NUM_ROUNDS, STATE_SIZE};
 
-/// Sponge rate (squeezed/CTL-exposed output lanes) of recursive
-/// Tip5: `PaddingFreeSponge<_,16,10,5>` / `DuplexChallenger<_,_,16,10>`.
+/// Sponge rate of recursive Tip5:
+/// `PaddingFreeSponge<_,16,10,5>` / `DuplexChallenger<_,_,16,10>`.
 pub const TIP5_RATE: usize = 10;
 /// Tip5 state width in base-field elements.
 pub const TIP5_WIDTH: usize = STATE_SIZE; // 16
+/// Number of Tip5 output limbs connected to the witness bus.
+pub const TIP5_OUTPUT_CTL: usize = TIP5_WIDTH;
 /// Tip5 Merkle digest width in base-field elements.
 pub const TIP5_DIGEST: usize = 5;
 
 /// Per-perm-row CTL preprocessed columns appended after the lookup AIR's
 /// L-table/round-selector columns: `in_ctl[16] | in_idx[16] |
-/// out_idx[10] | out_ctl[10] | mmcs_bit_ctl | mmcs_bit_idx`.
-/// (Mirrors the Poseidon1 compact-D1 header/idx/ctl columns,
-/// Tip5-shaped: no merkle/chaining selectors — Tip5 sponge chaining is
-/// realised by the executor carrying the previous full state into
-/// `IN`, not by per-limb preprocessed chain selectors.)
-pub const TIP5_CTL_PREP_COLS: usize = TIP5_WIDTH + TIP5_WIDTH + TIP5_RATE + TIP5_RATE + 2; // 54
+/// out_idx[16] | out_ctl[16] | mmcs_bit_ctl | mmcs_bit_idx`.
+///
+/// Tip5 sponge chaining reuses capacity limbs. Those limbs must be
+/// WitnessChecks creators when they are returned to the circuit and later
+/// consumed by another permutation.
+pub const TIP5_CTL_PREP_COLS: usize =
+    TIP5_WIDTH + TIP5_WIDTH + TIP5_OUTPUT_CTL + TIP5_OUTPUT_CTL + 2; // 66
 
 /// Total preprocessed width: lookup AIR columns + CTL columns.
-pub const TIP5_CIRCUIT_PREP_WIDTH: usize = L_PREP_WIDTH + TIP5_CTL_PREP_COLS; // 9 + 54 = 63
+pub const TIP5_CIRCUIT_PREP_WIDTH: usize = L_PREP_WIDTH + TIP5_CTL_PREP_COLS; // 9 + 66 = 75
 
 /// Extra main-trace columns appended after the validated lookup AIR's
 /// columns. The lookup AIR ignores these; the wrapper AIR uses them
@@ -76,8 +79,8 @@ pub const TIP5_CIRCUIT_EXTRA_MAIN_COLS: usize = 1;
 const CTL_IN_CTL: usize = 0;
 const CTL_IN_IDX: usize = CTL_IN_CTL + TIP5_WIDTH;
 const CTL_OUT_IDX: usize = CTL_IN_IDX + TIP5_WIDTH;
-const CTL_OUT_CTL: usize = CTL_OUT_IDX + TIP5_RATE;
-const CTL_MMCS_BIT_CTL: usize = CTL_OUT_CTL + TIP5_RATE;
+const CTL_OUT_CTL: usize = CTL_OUT_IDX + TIP5_OUTPUT_CTL;
+const CTL_MMCS_BIT_CTL: usize = CTL_OUT_CTL + TIP5_OUTPUT_CTL;
 const CTL_MMCS_BIT_IDX: usize = CTL_MMCS_BIT_CTL + 1;
 /// Verifier-fixed permutation-row selector in the embedded lookup AIR
 /// preprocessed columns. Mirrors `air_lookup::P_IS_ROUND`.
@@ -200,15 +203,15 @@ pub fn build_tip5_circuit_preprocessed<F: Field>(
     for (pi, row) in rows.iter().enumerate() {
         debug_assert_eq!(row.in_ctl.len(), TIP5_WIDTH);
         debug_assert_eq!(row.input_indices.len(), TIP5_WIDTH);
-        debug_assert_eq!(row.out_ctl.len(), TIP5_RATE);
-        debug_assert_eq!(row.output_indices.len(), TIP5_RATE);
+        debug_assert_eq!(row.out_ctl.len(), TIP5_OUTPUT_CTL);
+        debug_assert_eq!(row.output_indices.len(), TIP5_OUTPUT_CTL);
         let trace_row = TABLE_ROWS + pi * NUM_ROUNDS + (NUM_ROUNDS - 1);
         let base = trace_row * width + L_PREP_WIDTH;
         for i in 0..TIP5_WIDTH {
             prep[base + CTL_IN_CTL + i] = F::from_bool(row.in_ctl[i]);
             prep[base + CTL_IN_IDX + i] = F::from_u32(row.input_indices[i] * idx_scale);
         }
-        for i in 0..TIP5_RATE {
+        for i in 0..TIP5_OUTPUT_CTL {
             prep[base + CTL_OUT_IDX + i] = F::from_u32(row.output_indices[i] * idx_scale);
             prep[base + CTL_OUT_CTL + i] = F::from_bool(row.out_ctl[i]);
         }
@@ -430,13 +433,13 @@ where
             builder.push_interaction("WitnessChecks", input_idx_limb, Count::bounded(-mult, 1));
         }
 
-        // Rate output limb RECEIVES: `[idx, value, ZERO×(WITNESS_EXT_D
-        // − 1)]`, multiplicity `out_ctl * kind` (the resolved
-        // per-witness read count is baked into `out_ctl` by the
-        // preprocessor; `kind` gates rows). Same D-padding as the
-        // poseidon1 output-limb receives (`push(idx)`, `D` value
-        // coords, `WITNESS_EXT_D − D` zeros; Tip5 perm `D == 1`).
-        for i in 0..TIP5_RATE {
+        // Output limb RECEIVES: `[idx, value, ZERO×(WITNESS_EXT_D −
+        // 1)]`, multiplicity `out_ctl * kind` (the resolved per-witness
+        // read count is baked into `out_ctl` by the preprocessor).
+        // The first `TIP5_RATE` values are the sponge rate output; the
+        // remaining capacity outputs are connected when returned to the
+        // circuit because later sponge rows can consume them.
+        for i in 0..TIP5_OUTPUT_CTL {
             let idx: AB::Expr = pre[cbase + CTL_OUT_IDX + i].into();
             let out_ctl: AB::Expr = pre[cbase + CTL_OUT_CTL + i].into();
             let value: AB::Expr = local[tip5_out_col(i)].into();
