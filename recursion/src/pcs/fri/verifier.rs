@@ -75,11 +75,12 @@ where
 
 /// Build MMCS commitment-cap rows from Fiat–Shamir observation targets (lifted base scalars).
 ///
-/// Each cap entry holds one digest: `rate_ext` targets for the arity-2 compression shape and
-/// `capacity_ext` targets for the arity-4 shape (`4·capacity_ext == width_ext`). For D=4-style
-/// configs, adjacent lifted coordinates are packed into one extension element via
-/// [`pack_lifted_to_ext`]. For D=1 configs over a high-degree challenge extension the inner hash
-/// absorbs one base element per slot (lifted scalars); cap rows must **not** be packed.
+/// Each cap entry holds one native commitment digest: `digest_ext` targets for the
+/// arity-2 compression shape and `capacity_ext` targets for the arity-4 shape
+/// (`4·capacity_ext == width_ext`). For D=4-style configs, adjacent lifted
+/// coordinates are packed into one extension element via [`pack_lifted_to_ext`].
+/// For D=1 configs over a high-degree challenge extension the inner hash absorbs
+/// one base element per slot (lifted scalars); cap rows must **not** be packed.
 fn commitment_cap_rows_from_lifted<F, EF>(
     builder: &mut CircuitBuilder<EF>,
     perm_config: PermConfig,
@@ -92,7 +93,7 @@ where
     let chunk_ext = if perm_config.is_arity4_shape() {
         perm_config.capacity_ext()
     } else {
-        perm_config.rate_ext()
+        perm_config.digest_ext()
     };
     if perm_config.d() == 1 && EF::DIMENSION > 1 {
         debug_assert_eq!(
