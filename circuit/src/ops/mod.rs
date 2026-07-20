@@ -10,6 +10,7 @@ pub mod poseidon1_perm;
 pub mod poseidon2_perm;
 pub(crate) mod poseidon_perm;
 pub mod recompose;
+pub mod tip5_perm;
 
 pub use context::*;
 pub use executor::*;
@@ -47,4 +48,19 @@ pub use poseidon2_perm::{
 pub use recompose::{
     RecomposeCircuitRow, RecomposeTrace, RecomposeTraceKind, generate_recompose_coeff_trace,
     generate_recompose_trace,
+};
+pub use tip5_perm::{
+    // Prover/AIR (trace access)
+    Tip5CircuitRow,
+    // Configuration / NPO key
+    Tip5Config,
+    Tip5FieldId,
+    Tip5Goldilocks,
+    Tip5Params,
+    // Builder API
+    Tip5PermCall,
+    // Configuration
+    Tip5PermPrivateData,
+    Tip5Trace,
+    generate_tip5_trace,
 };

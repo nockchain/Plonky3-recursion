@@ -1,3 +1,4 @@
+use core::any::Any;
 use core::marker::PhantomData;
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
@@ -113,7 +114,7 @@ impl<F> core::fmt::Debug for CubeExecutor<F> {
 
 impl<F> NonPrimitiveExecutor<F> for CubeExecutor<F>
 where
-    F: Field + PrimeCharacteristicRing,
+    F: Field + PrimeCharacteristicRing + 'static,
 {
     fn execute(
         &self,
@@ -134,6 +135,10 @@ where
 
     fn op_type(&self) -> &NpoTypeId {
         &self.op_type
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 
     fn preprocess(

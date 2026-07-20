@@ -82,11 +82,18 @@ impl dyn OpExecutionState {
     }
 }
 
+/// Terminal-verifier metadata for Tip5 permutation rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tip5TerminalMode {
+    pub new_start: bool,
+    pub merkle_path: bool,
+}
+
 /// Trait for executable non-primitive operations
 ///
 /// This trait enables dynamic dispatch and allows each operation to control
 /// its own execution logic with full access to the execution context.
-pub trait NonPrimitiveExecutor<F: Field>: Debug {
+pub trait NonPrimitiveExecutor<F: Field>: Debug + Send + Sync {
     /// Execute the operation with full context access
     ///
     /// # Arguments
@@ -102,6 +109,14 @@ pub trait NonPrimitiveExecutor<F: Field>: Debug {
 
     /// Get operation type identifier (for config lookup, error reporting)
     fn op_type(&self) -> &NpoTypeId;
+
+    /// Return Tip5 terminal row metadata when this executor is a Tip5 permutation.
+    fn tip5_terminal_mode(&self) -> Option<Tip5TerminalMode> {
+        None
+    }
+
+    /// Allow downcasting to concrete executor types.
+    fn as_any(&self) -> &dyn Any;
 
     /// Update the preprocessed values related to this operation. This consists of:
     /// - the preprocessed values for the associated table
@@ -144,7 +159,7 @@ impl<F: Field> Clone for Box<dyn NonPrimitiveExecutor<F>> {
 ///
 /// Hints are non-deterministic witness assignments that do not have associated AIR tables
 /// or traces. They operate directly on the witness array.
-pub trait HintExecutor<F: Field>: Debug {
+pub trait HintExecutor<F: Field>: Debug + Send + Sync {
     /// Execute the hint.
     ///
     /// - `inputs`: Witness IDs to read from

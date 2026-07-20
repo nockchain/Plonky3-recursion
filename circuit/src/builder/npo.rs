@@ -25,6 +25,10 @@ pub enum NonPrimitiveOpParams<F> {
         merkle_path: bool,
         absorb_len: usize,
     },
+    Tip5Perm {
+        new_start: bool,
+        merkle_path: bool,
+    },
     Unconstrained {
         executor: Box<dyn HintExecutor<F>>,
     },
@@ -58,6 +62,17 @@ impl<F> NonPrimitiveOpParams<F> {
         }
     }
 
+    /// Return the `(new_start, merkle_path)` flags if this is a Tip5 permutation.
+    pub const fn as_tip5_perm(&self) -> Option<(bool, bool)> {
+        match self {
+            Self::Tip5Perm {
+                new_start,
+                merkle_path,
+            } => Some((*new_start, *merkle_path)),
+            _ => None,
+        }
+    }
+
     /// Returns `true` if this is the `Recompose` variant.
     pub const fn is_recompose(&self) -> bool {
         matches!(self, Self::Recompose)
@@ -84,6 +99,13 @@ impl<F: Field> Clone for NonPrimitiveOpParams<F> {
                 new_start: *new_start,
                 merkle_path: *merkle_path,
                 absorb_len: *absorb_len,
+            },
+            Self::Tip5Perm {
+                new_start,
+                merkle_path,
+            } => Self::Tip5Perm {
+                new_start: *new_start,
+                merkle_path: *merkle_path,
             },
             Self::Unconstrained { executor } => Self::Unconstrained {
                 executor: executor.boxed(),

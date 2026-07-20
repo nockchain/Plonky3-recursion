@@ -1,7 +1,7 @@
-//! Permutation-agnostic config and call wrapper over Poseidon1 / Poseidon2.
+//! Permutation-agnostic config and call wrapper over Poseidon1, Poseidon2, and Tip5.
 //!
-//! Lets MMCS/FRI code build perm rows without naming a specific hash: dispatch
-//! is centralized in [`CircuitBuilder::add_perm`] and [`perm_private_data`].
+//! Lets MMCS/FRI code build permutation rows without naming a specific hash:
+//! dispatch is centralized in [`CircuitBuilder::add_perm`] and [`perm_private_data`].
 
 use alloc::vec::Vec;
 
@@ -11,14 +11,17 @@ use crate::CircuitBuilderError;
 use crate::builder::CircuitBuilder;
 use crate::ops::poseidon1_perm::{Poseidon1Config, Poseidon1PermCall, Poseidon1PermPrivateData};
 use crate::ops::poseidon2_perm::{Poseidon2Config, Poseidon2PermCall, Poseidon2PermPrivateData};
+use crate::ops::tip5_perm::call::Tip5PermCallMmcs;
+use crate::ops::tip5_perm::{Tip5Config, Tip5PermPrivateData};
 use crate::ops::{NpoPrivateData, NpoTypeId};
 use crate::types::{ExprId, NonPrimitiveOpId};
 
-/// Challenger/MMCS permutation config: either Poseidon1 or Poseidon2.
+/// Challenger/MMCS permutation config.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PermConfig {
     Poseidon1(Poseidon1Config),
     Poseidon2(Poseidon2Config),
+    Tip5(Tip5Config),
 }
 
 impl PermConfig {
@@ -30,10 +33,15 @@ impl PermConfig {
         Self::Poseidon2(c)
     }
 
+    pub const fn tip5(c: Tip5Config) -> Self {
+        Self::Tip5(c)
+    }
+
     pub const fn d(self) -> usize {
         match self {
             Self::Poseidon1(c) => c.d(),
             Self::Poseidon2(c) => c.d(),
+            Self::Tip5(c) => c.d(),
         }
     }
 
@@ -41,6 +49,7 @@ impl PermConfig {
         match self {
             Self::Poseidon1(c) => c.rate(),
             Self::Poseidon2(c) => c.rate(),
+            Self::Tip5(c) => c.rate(),
         }
     }
 
@@ -48,6 +57,7 @@ impl PermConfig {
         match self {
             Self::Poseidon1(c) => c.rate_ext(),
             Self::Poseidon2(c) => c.rate_ext(),
+            Self::Tip5(c) => c.rate_ext(),
         }
     }
 
@@ -55,6 +65,7 @@ impl PermConfig {
         match self {
             Self::Poseidon1(c) => c.capacity_ext(),
             Self::Poseidon2(c) => c.capacity_ext(),
+            Self::Tip5(c) => c.capacity_ext(),
         }
     }
 
@@ -62,6 +73,7 @@ impl PermConfig {
         match self {
             Self::Poseidon1(c) => c.width_ext(),
             Self::Poseidon2(c) => c.width_ext(),
+            Self::Tip5(c) => c.width_ext(),
         }
     }
 
@@ -70,17 +82,33 @@ impl PermConfig {
         4 * self.capacity_ext() == self.width_ext()
     }
 
+    /// MMCS digest length in extension elements.
+    pub const fn digest_ext(self) -> usize {
+        match self {
+            Self::Poseidon1(c) => c.digest_ext(),
+            Self::Poseidon2(c) => c.digest_ext(),
+            Self::Tip5(c) => c.digest_ext(),
+        }
+    }
+
     pub const fn as_poseidon1(self) -> Option<Poseidon1Config> {
         match self {
             Self::Poseidon1(c) => Some(c),
-            Self::Poseidon2(_) => None,
+            Self::Poseidon2(_) | Self::Tip5(_) => None,
         }
     }
 
     pub const fn as_poseidon2(self) -> Option<Poseidon2Config> {
         match self {
             Self::Poseidon2(c) => Some(c),
-            Self::Poseidon1(_) => None,
+            Self::Poseidon1(_) | Self::Tip5(_) => None,
+        }
+    }
+
+    pub const fn as_tip5(self) -> Option<Tip5Config> {
+        match self {
+            Self::Tip5(c) => Some(c),
+            Self::Poseidon1(_) | Self::Poseidon2(_) => None,
         }
     }
 
@@ -89,6 +117,7 @@ impl PermConfig {
         match self {
             Self::Poseidon1(c) => NpoTypeId::poseidon1_perm(c),
             Self::Poseidon2(c) => NpoTypeId::poseidon2_perm(c),
+            Self::Tip5(c) => NpoTypeId::tip5_perm(c),
         }
     }
 }
@@ -102,6 +131,12 @@ impl From<Poseidon1Config> for PermConfig {
 impl From<Poseidon2Config> for PermConfig {
     fn from(c: Poseidon2Config) -> Self {
         Self::Poseidon2(c)
+    }
+}
+
+impl From<Tip5Config> for PermConfig {
+    fn from(c: Tip5Config) -> Self {
+        Self::Tip5(c)
     }
 }
 
@@ -127,6 +162,7 @@ pub fn perm_private_data<F: 'static + Send + Sync>(
     match cfg.into() {
         PermConfig::Poseidon1(_) => NpoPrivateData::new(Poseidon1PermPrivateData { sibling }),
         PermConfig::Poseidon2(_) => NpoPrivateData::new(Poseidon2PermPrivateData { sibling }),
+        PermConfig::Tip5(_) => NpoPrivateData::new(Tip5PermPrivateData { sibling }),
     }
 }
 
@@ -137,7 +173,7 @@ impl<F: Field> CircuitBuilder<F> {
         cfg: PermConfig,
         call: &PermCall,
     ) -> Result<(NonPrimitiveOpId, Vec<Option<ExprId>>), CircuitBuilderError> {
-        match cfg {
+        let result = match cfg {
             PermConfig::Poseidon1(config) => self.add_poseidon1_perm(&Poseidon1PermCall {
                 config,
                 new_start: call.new_start,
@@ -160,7 +196,18 @@ impl<F: Field> CircuitBuilder<F> {
                 return_all_outputs: call.return_all_outputs,
                 mmcs_index_sum: call.mmcs_index_sum,
             }),
-        }
+            PermConfig::Tip5(config) => self.add_tip5_perm_mmcs(&Tip5PermCallMmcs {
+                config,
+                new_start: call.new_start,
+                merkle_path: call.merkle_path,
+                mmcs_bit: call.mmcs_bit,
+                inputs: call.inputs.clone(),
+                out_ctl: call.out_ctl.clone(),
+                return_all_outputs: call.return_all_outputs,
+                mmcs_index_sum: call.mmcs_index_sum,
+            }),
+        };
+        result
     }
 }
 

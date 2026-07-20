@@ -194,6 +194,13 @@ impl Poseidon1Config {
         self.rate_ext() + self.capacity_ext()
     }
 
+    /// MMCS digest length in extension elements.
+    ///
+    /// Poseidon sponge and compression shapes use the rate as the digest.
+    pub const fn digest_ext(self) -> usize {
+        self.rate_ext()
+    }
+
     /// Check that input and output counts match this config's expected layout.
     ///
     /// - For D=1: `add_poseidon1_perm` always supplies `width_ext + 2` input slots (MMCS slots may
