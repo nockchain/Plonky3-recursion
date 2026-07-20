@@ -3,7 +3,7 @@
 //! Allows the verifier and circuit challenger to be parameterised by a permutation
 //! config without naming a specific hash (e.g. Poseidon2).
 
-use p3_circuit::ops::{Poseidon1Config, Poseidon2Config};
+use p3_circuit::ops::{Poseidon1Config, Poseidon2Config, Tip5Config};
 
 /// Config for the permutation used by the in-circuit challenger.
 ///
@@ -26,6 +26,11 @@ pub trait ChallengerPermConfig: Send + Sync {
     fn as_poseidon1(&self) -> Option<&Poseidon1Config> {
         None
     }
+
+    /// Tip5 config if this is a Tip5 permutation; `None` otherwise.
+    fn as_tip5(&self) -> Option<&Tip5Config> {
+        None
+    }
 }
 
 impl ChallengerPermConfig for Poseidon2Config {
@@ -44,6 +49,16 @@ impl ChallengerPermConfig for Poseidon1Config {
     }
 
     fn as_poseidon1(&self) -> Option<&Poseidon1Config> {
+        Some(self)
+    }
+}
+
+impl ChallengerPermConfig for Tip5Config {
+    fn extension_degree(&self) -> usize {
+        Self::d(*self)
+    }
+
+    fn as_tip5(&self) -> Option<&Tip5Config> {
         Some(self)
     }
 }

@@ -13,7 +13,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use p3_circuit::ops::{Poseidon1Config, Poseidon2Config};
+use p3_circuit::ops::{Poseidon1Config, Poseidon2Config, Tip5Config};
 use p3_circuit::{CircuitBuilder, CircuitBuilderError};
 use p3_field::{ExtensionField, PrimeField64};
 
@@ -105,6 +105,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
 
         let p2_config = self.config.as_poseidon2().copied();
         let p1_config = self.config.as_poseidon1().copied();
+        let t5_config = self.config.as_tip5().copied();
 
         // 1. Overwrite state[0..n] with inputs (NOT XOR, matches native)
         for (i, val) in self.input_buffer.drain(..).enumerate() {
@@ -114,8 +115,8 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         // The compact-D1 (base) path feeds capacity as `None` and binds the length tag inside the
         // AIR via `absorb_len`; the extension-field path feeds the full state, so it must apply the
         // tag to the tracked capacity element here.
-        let is_base =
-            p2_config.map_or_else(|| p1_config.is_some_and(|c| c.d() == 1), |c| c.d() == 1);
+        let base_air_binds_absorb_len = t5_config.is_none()
+            && p2_config.map_or_else(|| p1_config.is_some_and(|c| c.d() == 1), |c| c.d() == 1);
 
         // 2. Prefix-free padding (matches native `DuplexChallenger` 0.6): on an absorb
         // (`num_absorbed > 0`) zero the rate slots the inputs did not overwrite and bind the
@@ -126,7 +127,7 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             for slot in self.state.iter_mut().take(RATE).skip(num_absorbed) {
                 *slot = zero;
             }
-            if !is_base {
+            if !base_air_binds_absorb_len {
                 let length_tag = circuit.define_const(EF::from_u8(num_absorbed as u8));
                 self.state[RATE] = circuit.add(self.state[RATE], length_tag);
             }
@@ -146,6 +147,8 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
             } else {
                 self.duplexing_ext_p1::<BF, EF>(circuit, cfg);
             }
+        } else if let Some(cfg) = t5_config {
+            self.duplexing_base_tip5(circuit, cfg);
         } else {
             panic!("unsupported challenger permutation");
         }
@@ -244,6 +247,25 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
         self.state = outputs.to_vec();
     }
 
+    /// Tip5 D=1 duplexing.
+    fn duplexing_base_tip5<EF>(
+        &mut self,
+        circuit: &mut CircuitBuilder<EF>,
+        tip5_config: Tip5Config,
+    ) where
+        EF: p3_field::Field,
+    {
+        let new_start = !self.duplexed_once;
+        let inputs: [Option<Target>; 16] = core::array::from_fn(|i| Some(self.state[i]));
+        self.duplexed_once = true;
+
+        let outputs = circuit
+            .add_tip5_perm_for_challenger_base(tip5_config, new_start, inputs)
+            .expect("tip5 base permutation should succeed");
+
+        self.state = outputs.to_vec();
+    }
+
     /// Poseidon1 D>=2 duplexing.
     fn duplexing_ext_p1<BF, EF>(
         &mut self,
@@ -325,6 +347,13 @@ impl CircuitChallenger<8, 4, Poseidon1Config> {
     /// Create a Poseidon1 challenger with Goldilocks D2 Width8 configuration.
     pub const fn new_goldilocks_poseidon1() -> Self {
         Self::new(Poseidon1Config::GOLDILOCKS_D2_W8)
+    }
+}
+
+impl CircuitChallenger<16, 10, Tip5Config> {
+    /// Create a Tip5 challenger with the recursive Goldilocks base configuration.
+    pub const fn new_goldilocks_tip5_base() -> Self {
+        Self::new(Tip5Config::GOLDILOCKS_W16)
     }
 }
 

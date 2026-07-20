@@ -10,15 +10,15 @@ use p3_circuit_prover::batch_stark_prover::{
     poseidon1_air_builders, poseidon1_air_builders_d5, poseidon1_preprocessor,
     poseidon1_table_provers_d5, poseidon2_air_builders, poseidon2_air_builders_d5,
     poseidon2_air_builders_for_configs, poseidon2_preprocessor, poseidon2_table_provers_d5,
-    recompose_air_builders, recompose_preprocessor,
+    recompose_air_builders, recompose_preprocessor, tip5_air_builders, tip5_preprocessor,
 };
 use p3_circuit_prover::common::{NpoAirBuilder, NpoPreprocessor};
 use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{
     ConstraintProfile, Poseidon1Preprocessor, Poseidon1Prover, Poseidon1ProverD2,
-    Poseidon2Preprocessor, Poseidon2Prover, Poseidon2ProverD2, RecomposePreprocessor, TableProver,
-    recompose_table_provers,
+    Poseidon2Preprocessor, Poseidon2Prover, Poseidon2ProverD2, RecomposePreprocessor,
+    TableProver, Tip5Prover, recompose_table_provers,
 };
 use p3_commit::Pcs;
 use p3_field::extension::BinomiallyExtendable;
@@ -560,7 +560,9 @@ where
 
     fn non_primitive_preprocessors(&self) -> Vec<Box<dyn NpoPreprocessor<Val<SC>>>> {
         let cl = self.0.challenger_perm_config.extension_degree() != 2;
-        let perm_prep = if self.0.challenger_perm_config.as_poseidon1().is_some() {
+        let perm_prep = if self.0.challenger_perm_config.as_tip5().is_some() {
+            tip5_preprocessor::<Val<SC>>()
+        } else if self.0.challenger_perm_config.as_poseidon1().is_some() {
             poseidon1_preprocessor::<Val<SC>>()
         } else {
             poseidon2_preprocessor::<Val<SC>>()
@@ -574,12 +576,17 @@ where
             let mut provers: Vec<Box<dyn TableProver<SC>>> = match (
                 self.0.challenger_perm_config.as_poseidon1(),
                 self.0.challenger_perm_config.as_poseidon2(),
+                self.0.challenger_perm_config.as_tip5(),
             ) {
-                (Some(c), _) => vec![Box::new(Poseidon1ProverD2::new(
+                (Some(c), _, _) => vec![Box::new(Poseidon1ProverD2::new(
                     *c,
                     ConstraintProfile::Standard,
                 ))],
-                (_, Some(c)) => vec![Box::new(Poseidon2ProverD2::new(
+                (_, Some(c), _) => vec![Box::new(Poseidon2ProverD2::new(
+                    *c,
+                    ConstraintProfile::Standard,
+                ))],
+                (_, _, Some(c)) => vec![Box::new(Tip5Prover::new(
                     *c,
                     ConstraintProfile::Standard,
                 ))],
@@ -600,7 +607,9 @@ where
 
     fn non_primitive_air_builders(&self) -> Vec<Box<dyn NpoAirBuilder<SC, 2>>> {
         let cl = self.0.challenger_perm_config.extension_degree() != 2;
-        let mut builders = if self.0.challenger_perm_config.as_poseidon1().is_some() {
+        let mut builders = if self.0.challenger_perm_config.as_tip5().is_some() {
+            tip5_air_builders::<SC, 2>()
+        } else if self.0.challenger_perm_config.as_poseidon1().is_some() {
             poseidon1_air_builders::<SC, 2>()
         } else if self
             .0

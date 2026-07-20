@@ -37,7 +37,7 @@ use p3_batch_stark::{StarkGenericConfig, Val};
 use p3_circuit::ops::{NonPrimitivePreprocessedMap, NpoTypeId, Tip5Config, Tip5Trace};
 use p3_circuit::tables::Traces;
 use p3_circuit::{CircuitError, PreprocessedColumns};
-use p3_field::extension::BinomialExtensionField;
+use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
 use p3_field::{Algebra, ExtensionField, PrimeCharacteristicRing, PrimeField64};
 use p3_goldilocks::Goldilocks;
 use p3_matrix::Matrix;
@@ -520,23 +520,22 @@ where
     Ok(out)
 }
 
-impl NpoPreprocessor<Goldilocks> for Tip5Preprocessor {
+impl<F> NpoPreprocessor<F> for Tip5Preprocessor
+where
+    F: StarkField + PrimeField64 + BinomiallyExtendable<2>,
+{
     fn preprocess(
         &self,
         _circuit: &dyn core::any::Any,
         preprocessed: &mut dyn core::any::Any,
-    ) -> Result<NonPrimitivePreprocessedMap<Goldilocks>, CircuitError> {
-        if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<Goldilocks, 1>>() {
-            return tip5_preprocess_for_prover::<Goldilocks, Goldilocks, 1>(prep);
+    ) -> Result<NonPrimitivePreprocessedMap<F>, CircuitError> {
+        if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<F, 1>>() {
+            return tip5_preprocess_for_prover::<F, F, 1>(prep);
         }
-        if let Some(prep) = preprocessed
-            .downcast_mut::<PreprocessedColumns<BinomialExtensionField<Goldilocks, 2>, 2>>()
+        if let Some(prep) =
+            preprocessed.downcast_mut::<PreprocessedColumns<BinomialExtensionField<F, 2>, 2>>()
         {
-            return tip5_preprocess_for_prover::<
-                Goldilocks,
-                BinomialExtensionField<Goldilocks, 2>,
-                2,
-            >(prep);
+            return tip5_preprocess_for_prover::<F, BinomialExtensionField<F, 2>, 2>(prep);
         }
         Ok(NonPrimitivePreprocessedMap::new())
     }
