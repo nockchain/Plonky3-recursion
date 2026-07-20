@@ -88,7 +88,6 @@ impl<F: Field> CircuitBuilder<F> {
         let permutation_config: PermConfig = permutation_config.into();
         let width_ext = permutation_config.width_ext();
         let digest_ext = permutation_config.digest_ext();
-        let rate_ext = permutation_config.rate_ext();
         let mut op_ids = Vec::with_capacity(openings_expr.len());
         let mut output = vec![None; width_ext];
         let zero = self.define_const(F::ZERO);
@@ -122,8 +121,8 @@ impl<F: Field> CircuitBuilder<F> {
 
             if !is_first && !row_digest.is_empty() {
                 let mut inputs = vec![None; width_ext];
-                for (j, &d) in row_digest.iter().take(rate_ext).enumerate() {
-                    inputs[rate_ext + j] = Some(d);
+                for (j, &d) in row_digest.iter().take(digest_ext).enumerate() {
+                    inputs[digest_ext + j] = Some(d);
                 }
                 let _ = self.add_perm(
                     permutation_config,
@@ -133,7 +132,7 @@ impl<F: Field> CircuitBuilder<F> {
                         mmcs_bit: Some(zero),
                         mmcs_bit2: None,
                         inputs,
-                        out_ctl: vec![false; rate_ext],
+                        out_ctl: vec![false; digest_ext],
                         return_all_outputs: false,
                         mmcs_index_sum: None,
                     },
