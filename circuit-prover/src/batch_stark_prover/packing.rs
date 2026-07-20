@@ -63,6 +63,13 @@ impl TablePacking {
         self
     }
 
+    /// Override public-input lanes only.
+    #[must_use]
+    pub fn with_public_binding_lanes(mut self, public_lanes: usize) -> Self {
+        self.public_lanes = public_lanes.max(1);
+        self
+    }
+
     /// Override the lane count for a specific non-primitive op type (builder-style).
     ///
     /// Any NPO not listed falls back to the lane count returned by its [`TableProver`].
@@ -107,6 +114,11 @@ impl TablePacking {
 
     /// Return the number of public-input operations packed per AIR row.
     pub const fn public_lanes(&self) -> usize {
+        self.public_lanes
+    }
+
+    /// Return the public-input lane count used by caller-bound public values.
+    pub const fn public_binding_lanes(&self) -> usize {
         self.public_lanes
     }
 

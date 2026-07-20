@@ -307,6 +307,36 @@ impl<SC: StarkGenericConfig> NonPrimitiveTableEntry<SC> {
     }
 }
 
+/// Compare the verifier-relevant preprocessed binding inside two [`CommonData`] values.
+pub fn common_preprocessed_binding_eq<SC>(left: &CommonData<SC>, right: &CommonData<SC>) -> bool
+where
+    SC: StarkGenericConfig,
+    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: PartialEq,
+{
+    match (&left.preprocessed, &right.preprocessed) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            left.commitment == right.commitment
+                && left.matrix_to_instance == right.matrix_to_instance
+                && left.instances.len() == right.instances.len()
+                && left
+                    .instances
+                    .iter()
+                    .zip(&right.instances)
+                    .all(|(left, right)| match (left, right) {
+                        (None, None) => true,
+                        (Some(left), Some(right)) => {
+                            left.matrix_index == right.matrix_index
+                                && left.width == right.width
+                                && left.degree_bits == right.degree_bits
+                        }
+                        _ => false,
+                    })
+        }
+        _ => false,
+    }
+}
+
 /// Combined data for circuit proving, including STARK prover data and preprocessed columns.
 ///
 /// This struct bundles the upstream [`ProverData`] with circuit-specific preprocessed data,
@@ -641,6 +671,9 @@ where
     pub proof: BatchProof<SC>,
     /// Packing configuration used for the Witness, Public, and unified ALU tables.
     pub table_packing: TablePacking,
+    /// Public-table lane count used to bind caller-owned public values.
+    #[serde(default)]
+    pub public_binding_lanes: usize,
     /// The number of rows in each of the circuit tables.
     pub rows: RowCounts,
     /// Variant used for the primitive ALU table.
@@ -1006,6 +1039,17 @@ where
         CircuitTableAir::Alu(a) => pack!(a),
         CircuitTableAir::Dynamic(a) => pack!(a),
     }
+}
+
+/// Return the AIR shape used for lookup metadata derivation.
+pub fn strip_public_binding_for_lookup_metadata<SC, const D: usize>(
+    air: &CircuitTableAir<SC, D>,
+) -> CircuitTableAir<SC, D>
+where
+    SC: StarkGenericConfig,
+    SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
+{
+    air.clone()
 }
 
 /// Const-generic dispatch for [`BatchStarkProver::register_poseidon2_table`]: only the chosen
@@ -1772,7 +1816,8 @@ where
 
         Ok(BatchStarkProof {
             proof,
-            table_packing: effective_packing,
+            table_packing: effective_packing.clone(),
+            public_binding_lanes: effective_packing.public_binding_lanes(),
             rows: RowCounts::new([const_rows_padded, public_rows_padded, alu_rows_padded]),
             alu_variant: self.alu_variant,
             ext_degree: D,
