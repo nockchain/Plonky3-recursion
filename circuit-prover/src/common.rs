@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::any::Any;
 
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use p3_circuit::ops::{NonPrimitivePreprocessedMap, NpoTypeId, PrimitiveOpType};
 use p3_circuit::{Circuit, CircuitError};
 use p3_field::{Algebra, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
@@ -323,12 +323,23 @@ where
             }
             PrimitiveOpType::Public => {
                 // Public preprocessed per op from circuit.rs: 1 value (D-scaled out_idx).
-                // Convert to [ext_mult, out_idx] pairs using ext_reads.
+                // Convert to [ext_mult, out_idx] pairs using ext_reads. A public input can
+                // share a witness slot with Const(0) or another public input through
+                // `connect`; only the first non-Const public row creates the bus entry.
+                let const_idx = PrimitiveOpType::Const as usize;
+                let const_outputs = base_prep[const_idx].iter().copied().collect::<HashSet<_>>();
+                let mut seen_public_outputs = HashSet::new();
                 let mut prep_2col: Vec<Val<SC>> = Vec::with_capacity(base_prep[idx].len() * 2);
                 for &out_idx in &base_prep[idx] {
+                    let is_creator =
+                        !const_outputs.contains(&out_idx) && seen_public_outputs.insert(out_idx);
                     let out_wid =
                         (<Val<SC> as PrimeField64>::as_canonical_u64(&out_idx) as usize) / D;
-                    let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
+                    let n_reads = if is_creator {
+                        preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0)
+                    } else {
+                        0
+                    };
                     prep_2col.push(<Val<SC>>::from_u32(n_reads));
                     prep_2col.push(out_idx);
                 }
