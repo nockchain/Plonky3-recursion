@@ -155,6 +155,16 @@ pub struct CommonDataTargets<SC: StarkGenericConfig, Comm> {
     pub lookups: Vec<Vec<Lookup<Val<SC>>>>,
 }
 
+impl<SC: StarkGenericConfig, Comm> CommonDataTargets<SC, Comm> {
+    /// Return the global preprocessed commitment target, when the proof binds one.
+    pub const fn preprocessed_commitment(&self) -> Option<&Comm> {
+        match &self.preprocessed {
+            Some(preprocessed) => Some(&preprocessed.commitment),
+            None => None,
+        }
+    }
+}
+
 impl<SC: StarkGenericConfig, Comm> Recursive<SC::Challenge> for CommonDataTargets<SC, Comm>
 where
     Comm: Recursive<

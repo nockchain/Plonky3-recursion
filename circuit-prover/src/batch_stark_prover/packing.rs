@@ -24,6 +24,9 @@ pub struct TablePacking {
     /// Must be at least 2. Default 2 matches the previous double-step Horner layout.
     #[serde(default = "default_horner_pack_k")]
     horner_packed_steps: usize,
+    /// Number of leading public-input lanes in the first Public table row exposed as STARK public values.
+    #[serde(default)]
+    public_binding_lanes: usize,
 }
 
 const fn default_horner_pack_k() -> usize {
@@ -41,6 +44,7 @@ impl TablePacking {
             npo_lanes: Vec::new(),
             min_trace_height: 1,
             horner_packed_steps: 2,
+            public_binding_lanes: 0,
         }
     }
 
@@ -63,10 +67,10 @@ impl TablePacking {
         self
     }
 
-    /// Override public-input lanes only.
+    /// Expose leading public-input lanes as STARK public values.
     #[must_use]
-    pub fn with_public_binding_lanes(mut self, public_lanes: usize) -> Self {
-        self.public_lanes = public_lanes.max(1);
+    pub fn with_public_binding_lanes(mut self, lanes: usize) -> Self {
+        self.public_binding_lanes = lanes;
         self
     }
 
@@ -117,9 +121,9 @@ impl TablePacking {
         self.public_lanes
     }
 
-    /// Return the public-input lane count used by caller-bound public values.
+    /// Return the number of leading public lanes bound to STARK public values.
     pub const fn public_binding_lanes(&self) -> usize {
-        self.public_lanes
+        self.public_binding_lanes
     }
 
     /// Return the number of ALU operations packed per AIR row.
@@ -160,6 +164,12 @@ impl TablePacking {
             if *lanes == 0 {
                 return Err(ProofMetadataError::ZeroNpoLanes(op_type.clone()));
             }
+        }
+        if self.public_binding_lanes > self.public_lanes {
+            return Err(ProofMetadataError::PublicBindingExceedsLanes {
+                binding_lanes: self.public_binding_lanes,
+                public_lanes: self.public_lanes,
+            });
         }
         if self.min_trace_height == 0 || !self.min_trace_height.is_power_of_two() {
             return Err(ProofMetadataError::BadMinTraceHeight(self.min_trace_height));
