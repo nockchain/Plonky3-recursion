@@ -277,10 +277,10 @@ where
         CircuitTablesAir::Const(ConstAir::<Val<SC>, TRACE_D>::new(
             rows[PrimitiveTable::Const],
         )),
-        CircuitTablesAir::Public(PublicAir::<Val<SC>, TRACE_D>::new(
-            rows[PrimitiveTable::Public],
-            public_lanes,
-        )),
+        CircuitTablesAir::Public(
+            PublicAir::<Val<SC>, TRACE_D>::new(rows[PrimitiveTable::Public], public_lanes)
+                .with_public_binding_lanes(proof.public_binding_lanes),
+        ),
         CircuitTablesAir::Alu(alu_air),
     ];
 
