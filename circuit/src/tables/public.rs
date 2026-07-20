@@ -41,20 +41,28 @@ impl<'a, F: PrimeCharacteristicRing> PublicTraceBuilder<'a, F> {
 
     /// Builds the public input trace from circuit operations.
     pub fn build(self) -> Result<PublicTrace<F>, CircuitError> {
-        // `primitive_ops.len()` is a safe upper bound on the number of `Op::Public` entries.
-        let mut index = Vec::with_capacity(self.primitive_ops.len());
-        let mut values = Vec::with_capacity(self.primitive_ops.len());
+        // Public binding lanes are STARK public values, so row order must follow
+        // public input declaration order rather than the lowered operation order.
+        let mut entries = Vec::with_capacity(self.primitive_ops.len());
 
         for prim in self.primitive_ops {
-            if let Op::Public { out, public_pos: _ } = prim {
-                index.push(*out);
+            if let Op::Public { out, public_pos } = prim {
                 let value = self
                     .witness
                     .get(out.0 as usize)
                     .and_then(|opt| opt.as_ref().map(Dup::dup))
                     .ok_or(CircuitError::WitnessNotSet { witness_id: *out })?;
-                values.push(value);
+                entries.push((*public_pos, *out, value));
             }
+        }
+
+        entries.sort_unstable_by_key(|(public_pos, _, _)| *public_pos);
+
+        let mut index = Vec::with_capacity(entries.len());
+        let mut values = Vec::with_capacity(entries.len());
+        for (_, out, value) in entries {
+            index.push(out);
+            values.push(value);
         }
 
         Ok(PublicTrace { index, values })
@@ -127,6 +135,40 @@ mod tests {
             PublicTrace {
                 index: vec![out1, out2],
                 values: vec![val1, val2],
+            }
+        );
+    }
+
+    #[test]
+    fn test_public_inputs_follow_declaration_order() {
+        let out0 = WitnessId(7);
+        let out1 = WitnessId(3);
+        let val0 = F::from_u64(11);
+        let val1 = F::from_u64(22);
+
+        let ops = vec![
+            Op::Public {
+                out: out1,
+                public_pos: 1,
+            },
+            Op::Public {
+                out: out0,
+                public_pos: 0,
+            },
+        ];
+        let mut witness = vec![None; 8];
+        witness[out0.0 as usize] = Some(val0);
+        witness[out1.0 as usize] = Some(val1);
+
+        let trace = PublicTraceBuilder::new(&ops, &witness)
+            .build()
+            .expect("Failed to build trace");
+
+        assert_eq!(
+            trace,
+            PublicTrace {
+                index: vec![out0, out1],
+                values: vec![val0, val1],
             }
         );
     }
