@@ -284,6 +284,7 @@ impl<F: Field> Circuit<F> {
             .collect();
         // Clone for use in the loop below; the original stays in `preprocessed` for the prover.
         let hint_output_wids = preprocessed.hint_output_wids.clone();
+        let mut public_preprocessed_entries = Vec::new();
 
         // Process each primitive operation.
         for op in &self.ops {
@@ -301,9 +302,9 @@ impl<F: Field> Circuit<F> {
                 }
                 // Public: creates the output witness value. Store D-scaled out index.
                 // No ext_reads increment: Public is a creator, not a reader.
-                Op::Public { out, .. } => {
+                Op::Public { out, public_pos } => {
                     let idx = out.base_field_index::<F, D>();
-                    preprocessed.primitive[PrimitiveOpType::Public as usize].push(idx);
+                    public_preprocessed_entries.push((*public_pos, idx));
                     let out_idx = out.0 as usize;
                     if out_idx >= defined.len() {
                         defined.resize(out_idx + 1, false);
@@ -493,6 +494,12 @@ impl<F: Field> Circuit<F> {
                 }
             }
         }
+        public_preprocessed_entries.sort_unstable_by_key(|(public_pos, _)| *public_pos);
+        preprocessed.primitive[PrimitiveOpType::Public as usize] = public_preprocessed_entries
+            .into_iter()
+            .map(|(_, idx)| idx)
+            .collect();
+
 
         // Ensure ext_reads covers at least all witnesses.
         let size = self.witness_count as usize;
@@ -643,6 +650,29 @@ mod tests {
                 dup_npo_outputs: HashMap::new(),
                 hint_output_wids: hashbrown::HashSet::new(),
             }
+        );
+    }
+
+    #[test]
+    fn test_public_preprocessed_columns_follow_declaration_order() {
+        let ops = vec![
+            Op::Public {
+                out: WitnessId(7),
+                public_pos: 0,
+            },
+            Op::Public {
+                out: WitnessId(3),
+                public_pos: 1,
+            },
+        ];
+
+        let mut circuit = make_circuit(ops);
+        circuit.witness_count = 8;
+        let result = circuit.generate_preprocessed_columns::<1>().unwrap();
+
+        assert_eq!(
+            result.primitive[PrimitiveOpType::Public as usize],
+            vec![F::from_u32(7), F::from_u32(3)]
         );
     }
 
