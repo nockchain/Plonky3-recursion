@@ -87,6 +87,7 @@ impl<F: Field> CircuitBuilder<F> {
     ) -> Result<Vec<NonPrimitiveOpId>, CircuitBuilderError> {
         let permutation_config: PermConfig = permutation_config.into();
         let width_ext = permutation_config.width_ext();
+        let digest_ext = permutation_config.digest_ext();
         let rate_ext = permutation_config.rate_ext();
         let mut op_ids = Vec::with_capacity(openings_expr.len());
         let mut output = vec![None; width_ext];
@@ -141,7 +142,7 @@ impl<F: Field> CircuitBuilder<F> {
 
             let mut inputs = vec![None; width_ext];
             if is_first {
-                for (j, &d) in row_digest.iter().take(rate_ext).enumerate() {
+                for (j, &d) in row_digest.iter().take(digest_ext).enumerate() {
                     inputs[j] = Some(d);
                 }
             }
@@ -153,7 +154,7 @@ impl<F: Field> CircuitBuilder<F> {
                     mmcs_bit: Some(*direction),
                     mmcs_bit2: None,
                     inputs,
-                    out_ctl: vec![is_final; rate_ext],
+                    out_ctl: vec![is_final; digest_ext],
                     return_all_outputs: false,
                     mmcs_index_sum: None,
                 },
@@ -165,8 +166,8 @@ impl<F: Field> CircuitBuilder<F> {
         if has_tail {
             let tail = &openings_expr[directions_expr.len()];
             let mut inputs = vec![None; width_ext];
-            for (j, &t) in tail.iter().take(rate_ext).enumerate() {
-                inputs[rate_ext + j] = Some(t);
+            for (j, &t) in tail.iter().take(digest_ext).enumerate() {
+                inputs[digest_ext + j] = Some(t);
             }
             let (_, tail_output) = self.add_perm(
                 permutation_config,
@@ -176,7 +177,7 @@ impl<F: Field> CircuitBuilder<F> {
                     mmcs_bit: Some(zero),
                     mmcs_bit2: None,
                     inputs,
-                    out_ctl: vec![true; rate_ext],
+                    out_ctl: vec![true; digest_ext],
                     return_all_outputs: false,
                     mmcs_index_sum: None,
                 },
@@ -186,7 +187,7 @@ impl<F: Field> CircuitBuilder<F> {
 
         let output = output
             .into_iter()
-            .take(rate_ext)
+            .take(digest_ext)
             .map(|x| {
                 x.ok_or_else(|| CircuitBuilderError::MalformedNonPrimitiveOutputs {
                     op_id: *op_ids.last().unwrap(),
