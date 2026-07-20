@@ -311,6 +311,14 @@ where
     }
 
     let mut air_public_counts = vec![0usize; NUM_PRIMITIVE_TABLES];
+    air_public_counts[PrimitiveTable::Public as usize] = proof
+        .public_binding_lanes
+        .checked_mul(proof.ext_degree)
+        .ok_or_else(|| {
+            VerificationError::InvalidProofShape(
+                "primitive public binding count overflows usize".to_string(),
+            )
+        })?;
     for entry in &proof.non_primitives {
         air_public_counts.push(entry.public_values.len());
     }
