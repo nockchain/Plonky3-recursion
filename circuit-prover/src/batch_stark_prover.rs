@@ -6,7 +6,6 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{format, vec};
-use core::cell::RefCell;
 
 use hashbrown::HashMap;
 #[cfg(debug_assertions)]
@@ -26,11 +25,11 @@ use p3_circuit::tables::Traces;
 use p3_circuit::{CircuitError, PreprocessedColumns};
 use p3_commit::Pcs;
 use p3_field::extension::{BinomialExtensionField, BinomiallyExtendable};
-use p3_goldilocks::Goldilocks;
 use p3_field::{
     Algebra, BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField,
     PrimeField64,
 };
+use p3_goldilocks::Goldilocks;
 use p3_lookup::Lookups;
 use p3_lookup::folder::{ProverConstraintFolderWithLookups, VerifierConstraintFolderWithLookups};
 use p3_lookup::logup::LogUpGadget;
@@ -46,6 +45,7 @@ use p3_poseidon_circuit_cols::{
 use p3_uni_stark::{SymbolicExpression, SymbolicExpressionExt};
 use p3_util::log2_strict_usize;
 use serde::{Deserialize, Serialize};
+use spin::Mutex;
 use thiserror::Error;
 use tracing::instrument;
 
@@ -54,11 +54,11 @@ use crate::air::{AluAir, AluExtMulKind, ConstAir, PublicAir};
 use crate::batch_stark_prover::dynamic_air::transmute_traces;
 use crate::batch_stark_prover::packing::{AirTableShape, TraceTablesLayout};
 use crate::common::{CircuitTableAir, NpoAirBuilder, NpoPreprocessor, reduce_lanes_if_dummy};
-use crate::config::StarkField;
+use crate::config::{
+    GoldilocksBlake3Challenge, GoldilocksBlake3Config, GoldilocksTipsConfig, StarkField,
+};
 use crate::constraint_profile::ConstraintProfile;
 use crate::field_params::ExtractBinomialW;
-
-use crate::config::{GoldilocksBlake3Challenge, GoldilocksBlake3Config, GoldilocksTipsConfig};
 mod dynamic_air;
 mod packing;
 mod poseidon1;
@@ -424,7 +424,7 @@ mod serde_verifier_prover_data {
 }
 
 fn empty_alu_schedule_cache<F>() -> AluScheduleCache<F> {
-    RefCell::new(None)
+    Mutex::new(None)
 }
 
 /// Combined data for circuit proving, including STARK prover data and preprocessed columns.
@@ -441,7 +441,7 @@ fn empty_alu_schedule_cache<F>() -> AluScheduleCache<F> {
 /// and are not needed here.
 /// Cached ALU packed-Horner schedule and preprocessed trace matrix, keyed by the
 /// `(lanes, horner_packed_steps, min_height)` they were computed for.
-type AluScheduleCache<F> = RefCell<
+type AluScheduleCache<F> = Mutex<
     Option<(
         usize,
         usize,
@@ -482,7 +482,7 @@ impl<SC: StarkGenericConfig> CircuitProverData<SC> {
             prover_data,
             primitive_columns,
             non_primitive_columns,
-            alu_schedule_cache: RefCell::new(None),
+            alu_schedule_cache: Mutex::new(None),
         }
     }
 
@@ -496,7 +496,7 @@ impl<SC: StarkGenericConfig> CircuitProverData<SC> {
     pub fn into_verifier_only(mut self) -> Self {
         self.primitive_columns = Vec::new();
         self.non_primitive_columns = NonPrimitivePreprocessedMap::default();
-        self.alu_schedule_cache = RefCell::new(None);
+        self.alu_schedule_cache = Mutex::new(None);
         self
     }
 }
@@ -1839,8 +1839,12 @@ where
         }
 
         let common = &proof.stark_common;
-        dispatch_by_ext_degree!(EF::DIMENSION, |D| self
-            .verify::<D>(proof, expected_w, common, &[]))
+        dispatch_by_ext_degree!(EF::DIMENSION, |D| self.verify::<D>(
+            proof,
+            expected_w,
+            common,
+            &[]
+        ))
     }
 
     /// Verify while binding leading Public-table lanes to caller-supplied STARK public values.
@@ -1964,7 +1968,7 @@ where
         // (alu_prep, alu_lanes, horner_k, min_height), not on D, so both are cached in
         // `circuit_prover_data` and reused across proofs of this circuit shape.
         let (alu_schedule, cached_prep_trace) = {
-            let mut cache = circuit_prover_data.alu_schedule_cache.borrow_mut();
+            let mut cache = circuit_prover_data.alu_schedule_cache.lock();
             match cache.as_ref() {
                 Some((cached_lanes, cached_k, cached_min_height, schedule, prep_trace))
                     if *cached_lanes == alu_lanes
@@ -1994,7 +1998,7 @@ where
             alu_air = alu_air.with_precomputed_prep_trace(prep_trace);
         } else if let Some(prep_trace) = alu_air.preprocessed_trace() {
             alu_air = alu_air.with_precomputed_prep_trace(prep_trace.clone());
-            let mut cache = circuit_prover_data.alu_schedule_cache.borrow_mut();
+            let mut cache = circuit_prover_data.alu_schedule_cache.lock();
             if let Some((cached_lanes, cached_k, cached_min_height, _, cached_prep_trace)) =
                 cache.as_mut()
                 && *cached_lanes == alu_lanes
@@ -2407,10 +2411,8 @@ impl BatchStarkProver<GoldilocksBlake3Config> {
     ) -> Result<GoldilocksBlake3PathPrunedCompactBatchStarkProof, BatchStarkProverError> {
         proof.validate()?;
         fri_shape.validate()?;
-        if !common_preprocessed_binding_eq(
-            &proof.stark_common,
-            &canonical_setup.prover_data.common,
-        ) {
+        if !common_preprocessed_binding_eq(&proof.stark_common, &canonical_setup.prover_data.common)
+        {
             return Err(BatchStarkProverError::Verify(String::from(
                 "Goldilocks/BLAKE3 compact proof does not match canonical setup binding",
             )));
