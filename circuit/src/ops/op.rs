@@ -178,48 +178,36 @@ impl<F> Op<F> {
         matches!(self, Self::Alu { kind: k, .. } if *k == kind)
     }
 
-    /// Rewrite witness IDs in place using the given map (follows chains to canonical ID).
-    /// Used by the optimizer to apply ALU dedup without re-boxing non-primitive executors.
+    /// Rewrite witness IDs read by this op using the given map (follows chains to canonical ID).
+    /// Creator outputs keep their allocated slots; removed ALU duplicates are reconciled after execution.
     pub fn apply_witness_rewrite(&mut self, rewrite: &HashMap<WitnessId, WitnessId>) {
         if rewrite.is_empty() {
             return;
         }
         match self {
-            Self::Const { out, .. } => *out = out.resolve(rewrite),
-            Self::Public { out, .. } => *out = out.resolve(rewrite),
+            Self::Const { .. } | Self::Public { .. } => {}
             Self::Alu {
+                kind,
                 a,
                 b,
                 c,
-                out,
                 intermediate_out,
                 ..
             } => {
                 *a = a.resolve(rewrite);
                 *b = b.resolve(rewrite);
                 *c = c.map(|id| id.resolve(rewrite));
-                *out = out.resolve(rewrite);
-                *intermediate_out = intermediate_out.map(|id| id.resolve(rewrite));
+                if *kind == AluOpKind::HornerAcc {
+                    *intermediate_out = intermediate_out.map(|id| id.resolve(rewrite));
+                }
             }
-            Self::Hint {
-                inputs, outputs, ..
-            } => {
+            Self::Hint { inputs, .. } => {
                 for w in inputs.iter_mut() {
                     *w = w.resolve(rewrite);
                 }
-                for w in outputs.iter_mut() {
-                    *w = w.resolve(rewrite);
-                }
             }
-            Self::NonPrimitiveOpWithExecutor {
-                inputs, outputs, ..
-            } => {
+            Self::NonPrimitiveOpWithExecutor { inputs, .. } => {
                 for g in inputs.iter_mut() {
-                    for w in g.iter_mut() {
-                        *w = w.resolve(rewrite);
-                    }
-                }
-                for g in outputs.iter_mut() {
                     for w in g.iter_mut() {
                         *w = w.resolve(rewrite);
                     }
