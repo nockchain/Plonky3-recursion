@@ -37,11 +37,12 @@ use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_goldilocks::Goldilocks;
 use p3_lookup::{Count, InteractionBuilder};
-use p3_matrix::{Matrix, dense::RowMajorMatrix};
+use p3_matrix::Matrix;
+use p3_matrix::dense::RowMajorMatrix;
 
 use crate::air_lookup::{
-    PREP_WIDTH as L_PREP_WIDTH, TABLE_ROWS, Tip5PermLookupAir, tip5_in_col,
-    tip5_lookup_air_width, tip5_out_col,
+    PREP_WIDTH as L_PREP_WIDTH, TABLE_ROWS, Tip5PermLookupAir, tip5_in_col, tip5_lookup_air_width,
+    tip5_out_col,
 };
 use crate::generation_lookup::generate_lookup_trace;
 use crate::tip5_spec::{NUM_ROUNDS, STATE_SIZE};
@@ -148,7 +149,8 @@ pub fn build_tip5_circuit_main_with_mmcs_bits<F>(
     for r in 0..height {
         let src = r * lookup_width;
         let dst = r * width;
-        values[dst..dst + lookup_width].copy_from_slice(&lookup_main.values[src..src + lookup_width]);
+        values[dst..dst + lookup_width]
+            .copy_from_slice(&lookup_main.values[src..src + lookup_width]);
     }
 
     let mmcs_col = lookup_width;
@@ -377,7 +379,10 @@ where
         let mmcs_bit_ctl: AB::Expr = pre[cbase + CTL_MMCS_BIT_CTL].into();
         let mmcs_bit_idx: AB::Expr = pre[cbase + CTL_MMCS_BIT_IDX].into();
         let mmcs_bit: AB::Expr = local[tip5_lookup_air_width()].into();
-        let active_mmcs_bit = mmcs_bit_ctl.clone() * mmcs_bit.clone();
+        // The CTL selector gates multiplicity, not the swapped value. Including it in the
+        // value expression changes zero-multiplicity LogUp denominators off-domain and breaks
+        // the quotient identity even though row checks still pass on the trace domain.
+        let active_mmcs_bit = mmcs_bit.clone();
 
         builder.assert_zero(
             kind.clone()

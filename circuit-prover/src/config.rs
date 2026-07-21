@@ -26,8 +26,8 @@ use p3_symmetric::{
     CompressionFunctionFromHasher, CryptographicPermutation, PaddingFreeSponge, SerializingHasher,
     TruncatedPermutation,
 };
-use p3_uni_stark::StarkConfig;
 use p3_tip5_circuit_air::Tip5Perm;
+use p3_uni_stark::StarkConfig;
 
 /// Compression function arity (number of inputs per compression).
 const COMPRESS_ARITY: usize = 2;
@@ -356,6 +356,8 @@ impl<F> StarkField for F where F: Field + PrimeCharacteristicRing + TwoAdicField
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use super::*;
 
     #[test]
@@ -363,5 +365,25 @@ mod tests {
         let _bb: BabyBearConfig = baby_bear();
         let _kb: KoalaBearConfig = koala_bear();
         let _gl: GoldilocksConfig = goldilocks();
+    }
+
+    #[test]
+    fn goldilocks_tip5_pure_query_profile_pins_60_johnson_bits() {
+        assert_eq!(
+            GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_BLOWUP
+                * GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_NUM_QUERIES,
+            GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_JOHNSON_BITS
+        );
+        assert_eq!(GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_JOHNSON_BITS, 60);
+        let _default = goldilocks_tip5_60bit();
+        let _equivalent = goldilocks_tip5_pure_query_60bit_with_shape_and_cap(5, 12, 5);
+    }
+
+    #[test]
+    fn goldilocks_tip5_pure_query_profile_rejects_sub_60bit_query_budget() {
+        let result = std::panic::catch_unwind(|| {
+            goldilocks_tip5_pure_query_60bit_with_shape_and_cap(4, 14, 5);
+        });
+        assert!(result.is_err());
     }
 }

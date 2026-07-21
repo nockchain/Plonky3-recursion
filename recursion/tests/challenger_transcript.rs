@@ -1512,6 +1512,127 @@ mod koala_bear_d1_poseidon1 {
 }
 
 // ============================================================================
+// Goldilocks D=1 Tip5, WIDTH=16, RATE=10
+// ============================================================================
+
+mod goldilocks_tip5_d1 {
+    use p3_challenger::DuplexChallenger;
+    use p3_circuit::ops::{Tip5Config, Tip5Goldilocks, generate_tip5_trace};
+    use p3_field::PrimeCharacteristicRing;
+    use p3_goldilocks::Goldilocks;
+    use p3_tip5_circuit_air::Tip5Perm;
+
+    use super::*;
+
+    type F = Goldilocks;
+    const TIP5_WIDTH: usize = 16;
+    const TIP5_RATE: usize = 10;
+
+    fn setup_circuit() -> CircuitBuilder<F> {
+        let mut circuit = CircuitBuilder::<F>::new();
+        circuit.enable_tip5_perm::<Tip5Goldilocks, _>(
+            generate_tip5_trace::<F, Tip5Goldilocks>,
+            Tip5Perm,
+        );
+        circuit
+    }
+
+    const fn new_challenger() -> CircuitChallenger<TIP5_WIDTH, TIP5_RATE, Tip5Config> {
+        CircuitChallenger::new_goldilocks_tip5_base()
+    }
+
+    #[test]
+    fn test_goldilocks_tip5_observe_sample() {
+        let mut native = DuplexChallenger::<F, _, TIP5_WIDTH, TIP5_RATE>::new(Tip5Perm);
+        let mut circuit = setup_circuit();
+        let mut cc = new_challenger();
+
+        for i in 0..TIP5_RATE {
+            let val = F::from_u64(i as u64 + 1);
+            native.observe(val);
+            let target = circuit.define_const(val);
+            RecursiveChallenger::<F, F>::observe(&mut cc, &mut circuit, target);
+        }
+
+        let expected = circuit.define_const(native.sample());
+        let actual = RecursiveChallenger::<F, F>::sample(&mut cc, &mut circuit);
+        circuit.connect(actual, expected);
+
+        circuit
+            .build()
+            .expect("circuit should build")
+            .runner()
+            .run()
+            .expect("Goldilocks Tip5 observe/sample should match native");
+    }
+
+    #[test]
+    fn test_goldilocks_tip5_partial_absorb_sample_bits_and_pow() {
+        let mut native = DuplexChallenger::<F, _, TIP5_WIDTH, TIP5_RATE>::new(Tip5Perm);
+        let mut circuit = setup_circuit();
+        let mut cc = new_challenger();
+
+        for i in 0..3 {
+            let val = F::from_u64(i as u64 + 100);
+            native.observe(val);
+            let target = circuit.define_const(val);
+            RecursiveChallenger::<F, F>::observe(&mut cc, &mut circuit, target);
+        }
+
+        let expected_sample = circuit.define_const(native.sample());
+        let actual_sample = RecursiveChallenger::<F, F>::sample(&mut cc, &mut circuit);
+        circuit.connect(actual_sample, expected_sample);
+
+        for i in 0..TIP5_RATE {
+            let val = F::from_u64(i as u64 + 500);
+            native.observe(val);
+            let target = circuit.define_const(val);
+            RecursiveChallenger::<F, F>::observe(&mut cc, &mut circuit, target);
+        }
+
+        let sample_bits = 6usize;
+        let expected_bits = native.sample_bits(sample_bits);
+        let actual_bits =
+            RecursiveChallenger::<F, F>::sample_bits(&mut cc, &mut circuit, sample_bits)
+                .expect("sample_bits should succeed");
+        assert_eq!(actual_bits.len(), sample_bits);
+        for (bit_idx, &bit) in actual_bits.iter().enumerate() {
+            let expected =
+                circuit.define_const(F::from_u64(((expected_bits >> bit_idx) & 1) as u64));
+            circuit.connect(bit, expected);
+        }
+
+        let pow_bits = 2usize;
+        let witness = (0u64..)
+            .find(|&candidate| {
+                let mut probe = native.clone();
+                probe.observe(F::from_u64(candidate));
+                probe.sample_bits(pow_bits) == 0
+            })
+            .expect("brute-force PoW witness should terminate");
+        let witness_f = F::from_u64(witness);
+        native.observe(witness_f);
+        assert_eq!(native.sample_bits(pow_bits), 0);
+
+        let witness_target = circuit.define_const(witness_f);
+        RecursiveChallenger::<F, F>::check_pow_witness(
+            &mut cc,
+            &mut circuit,
+            pow_bits,
+            witness_target,
+        )
+        .expect("check_pow_witness should succeed");
+
+        circuit
+            .build()
+            .expect("circuit should build")
+            .runner()
+            .run()
+            .expect("Goldilocks Tip5 transcript should match native");
+    }
+}
+
+// ============================================================================
 // Goldilocks D=2, WIDTH=8, RATE=4
 // ============================================================================
 
