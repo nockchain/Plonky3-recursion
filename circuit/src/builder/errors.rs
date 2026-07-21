@@ -109,6 +109,10 @@ pub enum CircuitBuilderError {
     #[error("Wrong batch size: expected {expected}, got {got}")]
     WrongBatchSize { expected: usize, got: usize },
 
+    /// Malformed Merkle cap shape supplied to a recursive MMCS verifier.
+    #[error("Invalid Merkle cap: {details}")]
+    InvalidMerkleCap { details: String },
+
     /// Failed to format openings for MMCS preprocessing; preserves some context.
     #[error("Failed to format openings for operation {op:?}: {details}")]
     FormatOpeningsFailed { op: NpoTypeId, details: String },

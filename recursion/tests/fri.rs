@@ -909,6 +909,63 @@ fn test_fri_verifier_rejects_per_query_schedule_mismatch() {
 }
 
 #[test]
+fn test_fri_verifier_rejects_first_query_sibling_shape_mismatch() {
+    let setup = generate_setup(
+        0,
+        vec![vec![0u8, 5, 8, 8, 10], vec![8u8, 11], vec![4u8, 5, 8]],
+    );
+    let mut result = produce_inputs_multi(
+        &setup.pcs,
+        &setup.perm,
+        setup.log_blowup,
+        setup.log_final_poly_len,
+        (setup.commit_pow_bits, setup.query_pow_bits),
+        &setup.group_sizes,
+        0,
+    );
+
+    try_build_fri_verifier(&result, setup.log_blowup)
+        .expect("untampered FRI proof must pass shape validation");
+
+    result.fri_proof.query_proofs[0].commit_phase_openings[0]
+        .sibling_values
+        .push(Challenge::ONE);
+
+    let err = try_build_fri_verifier(&result, setup.log_blowup)
+        .expect_err("proof-owned first-query sibling shape must be rejected");
+    assert!(
+        matches!(err, VerificationError::InvalidProofShape(_)),
+        "expected InvalidProofShape, got {err:?}"
+    );
+}
+
+#[test]
+fn test_fri_verifier_rejects_zero_log_arity() {
+    let setup = generate_setup(
+        0,
+        vec![vec![0u8, 5, 8, 8, 10], vec![8u8, 11], vec![4u8, 5, 8]],
+    );
+    let mut result = produce_inputs_multi(
+        &setup.pcs,
+        &setup.perm,
+        setup.log_blowup,
+        setup.log_final_poly_len,
+        (setup.commit_pow_bits, setup.query_pow_bits),
+        &setup.group_sizes,
+        0,
+    );
+
+    result.fri_proof.query_proofs[0].commit_phase_openings[0].log_arity = 0;
+
+    let err = try_build_fri_verifier(&result, setup.log_blowup)
+        .expect_err("zero FRI log_arity must be rejected");
+    assert!(
+        matches!(err, VerificationError::InvalidProofShape(_)),
+        "expected InvalidProofShape, got {err:?}"
+    );
+}
+
+#[test]
 fn test_fri_verifier_rejects_zero_query_proof() {
     let setup = generate_setup(
         0,

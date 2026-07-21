@@ -1241,6 +1241,49 @@ fn test_stark_serialization_round_trip() {
 // states a malicious or corrupt serialized proof could carry and assert that
 // `validate()` rejects them before verification.
 
+fn simple_babybear_metadata_proof() -> (
+    BatchStarkProver<BabyBearConfig>,
+    BatchStarkProof<BabyBearConfig>,
+) {
+    let mut builder = CircuitBuilder::<BabyBear>::new();
+    let x = builder.public_input();
+    let expected = builder.public_input();
+    let c5 = builder.define_const(BabyBear::from_u64(5));
+    let c2 = builder.define_const(BabyBear::from_u64(2));
+    let mul_result = builder.mul(c5, c2);
+    let add_result = builder.add(x, mul_result);
+    let diff = builder.sub(add_result, expected);
+    builder.assert_zero(diff);
+
+    let circuit = builder.build().unwrap();
+    let cfg = config::baby_bear();
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
+            &circuit,
+            &TablePacking::default(),
+            &[],
+            &[],
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let (airs, log_degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &log_degrees);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+
+    let mut runner = circuit.runner();
+    runner
+        .set_public_inputs(&[BabyBear::from_u64(7), BabyBear::from_u64(17)])
+        .unwrap();
+    let traces = runner.run().unwrap();
+
+    let prover = BatchStarkProver::new(cfg);
+    let proof = prover
+        .prove_all_tables(&traces, &circuit_prover_data)
+        .unwrap();
+    (prover, proof)
+}
+
 /// Field-compatible mirror of `TablePacking` (same field order/types) used to
 /// forge invalid serialized packings. `postcard` is non-self-describing, so a
 /// structurally identical struct round-trips into the real `TablePacking`.
@@ -1375,6 +1418,61 @@ fn validate_rejects_zero_lane_npo_entry() {
         air_variant: AirVariant::Baseline,
     };
     assert_eq!(entry.validate(), Err(ProofMetadataError::ZeroNpoLanes(op)));
+}
+
+#[test]
+fn validate_rejects_invalid_npo_entry_metadata() {
+    let op = p3_circuit::ops::NpoTypeId::new("test_op");
+    let zero_rows = NonPrimitiveTableEntry::<BabyBearConfig> {
+        op_type: op.clone(),
+        rows: 0,
+        lanes: 1,
+        public_values: Vec::new(),
+        air_variant: AirVariant::Baseline,
+    };
+    assert_eq!(
+        zero_rows.validate(),
+        Err(ProofMetadataError::ZeroNpoRows(op.clone()))
+    );
+
+    let unsupported_variant = NonPrimitiveTableEntry::<BabyBearConfig> {
+        op_type: op.clone(),
+        rows: 4,
+        lanes: 1,
+        public_values: Vec::new(),
+        air_variant: AirVariant::Optimized,
+    };
+    assert_eq!(
+        unsupported_variant.validate(),
+        Err(ProofMetadataError::UnsupportedNpoAirVariant {
+            op_type: op,
+            air_variant: AirVariant::Optimized,
+        })
+    );
+}
+
+#[test]
+fn verify_all_tables_rejects_tampered_preprocessed_matrix_mapping() {
+    let (prover, mut proof) = simple_babybear_metadata_proof();
+    let global = proof
+        .stark_common
+        .preprocessed
+        .as_mut()
+        .expect("simple proof has committed preprocessed constants");
+    global.matrix_to_instance.push(global.instances.len());
+
+    let err = prover
+        .verify_all_tables::<BabyBear>(&proof)
+        .expect_err("out-of-bounds preprocessed matrix mapping must be rejected");
+    assert!(
+        matches!(
+            err,
+            BatchStarkProverError::InvalidMetadata(
+                ProofMetadataError::PreprocessedMatrixToInstanceOutOfBounds { .. }
+            )
+        ),
+        "unexpected error: {err:?}"
+    );
 }
 
 #[test]

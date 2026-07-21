@@ -73,6 +73,29 @@ where
         .collect()
 }
 
+fn checked_log_height(log_size: usize, log_blowup: usize) -> Result<usize, VerificationError> {
+    log_size.checked_add(log_blowup).ok_or_else(|| {
+        VerificationError::InvalidProofShape("FRI matrix log-height overflow".to_string())
+    })
+}
+
+fn checked_log_sum(log_arities: &[usize]) -> Result<usize, VerificationError> {
+    log_arities.iter().try_fold(0usize, |acc, &arity| {
+        acc.checked_add(arity).ok_or_else(|| {
+            VerificationError::InvalidProofShape("FRI log_arity sum overflow".to_string())
+        })
+    })
+}
+
+fn checked_pow2_usize(log_value: usize, label: &str) -> Result<usize, VerificationError> {
+    if log_value >= usize::BITS as usize {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "{label} {log_value} cannot be represented as a usize power of two"
+        )));
+    }
+    Ok(1usize << log_value)
+}
+
 /// Build MMCS commitment-cap rows from Fiat–Shamir observation targets (lifted base scalars).
 ///
 /// Each cap entry holds one native commitment digest: `digest_ext` targets for the
@@ -1088,26 +1111,34 @@ where
     for &b in index_bits {
         builder.assert_bool(b);
     }
-    debug_assert_eq!(
-        index_bits.len(),
-        log_global_max_height,
-        "index_bits.len() must equal log_global_max_height"
-    );
+    if index_bits.len() != log_global_max_height {
+        return Err(VerificationError::InvalidProofShape(format!(
+            "index_bits length must equal log_global_max_height: expected {log_global_max_height}, got {}",
+            index_bits.len()
+        )));
+    }
 
     // Collect unique heights across all matrices and precompute evaluation points.
     let unique_heights_desc: Vec<usize> = {
-        let mut heights: Vec<usize> = commitments_with_opening_points
-            .iter()
-            .flat_map(|(_, mats)| {
-                mats.iter()
-                    .map(|(domain, _)| domain.log_size() + log_blowup)
-            })
-            .collect();
+        let mut heights = Vec::new();
+        for (_, mats) in commitments_with_opening_points {
+            for (domain, _) in mats {
+                heights.push(checked_log_height(domain.log_size(), log_blowup)?);
+            }
+        }
         heights.sort_unstable();
         heights.dedup();
         heights.reverse();
         heights
     };
+    for &height in &unique_heights_desc {
+        if height > log_global_max_height {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "matrix log-height {height} exceeds global FRI query height {log_global_max_height}"
+            )));
+        }
+        checked_pow2_usize(height, "FRI matrix log-height")?;
+    }
 
     let eval_points = if unique_heights_desc.is_empty() {
         BTreeMap::new()
@@ -1148,11 +1179,14 @@ where
             // verification (only height drives grouping); see Plonky3 TODO on Dimensions.width.
             let dimensions: Vec<Dimensions> = mats
                 .iter()
-                .map(|(domain, _)| Dimensions {
-                    height: 1 << (domain.log_size() + log_blowup),
-                    width: 0,
+                .map(|(domain, _)| {
+                    let log_height = checked_log_height(domain.log_size(), log_blowup)?;
+                    Ok(Dimensions {
+                        height: checked_pow2_usize(log_height, "FRI matrix log-height")?,
+                        width: 0,
+                    })
                 })
-                .collect();
+                .collect::<Result<Vec<_>, VerificationError>>()?;
 
             // Hiding MMCS appends a per-matrix salt to each leaf; non-hiding passes `None`.
             let batch_salt = batch_salts.get(batch_idx);
@@ -1396,7 +1430,7 @@ where
     let num_queries = fri_proof_targets.query_proofs.len();
     let log_arities = &fri_proof_targets.log_arities;
 
-    let total_log_reduction: usize = log_arities.iter().sum();
+    let total_log_reduction = checked_log_sum(log_arities)?;
 
     tracing::debug!(
         "verify_fri_circuit: num_phases={}, num_queries={}, log_blowup={}, log_arities={:?}",
@@ -1481,13 +1515,23 @@ where
         }
         for (phase, opening) in query_proof.commit_phase_openings.iter().enumerate() {
             let expected_log_arity = log_arities[phase];
+            if expected_log_arity == 0 {
+                return Err(VerificationError::InvalidProofShape(format!(
+                    "query {q} phase {phase}: log_arity must be nonzero"
+                )));
+            }
             if opening.log_arity != expected_log_arity {
                 return Err(VerificationError::InvalidProofShape(format!(
                     "query {q} phase {phase}: log_arity disagrees with global FRI schedule: expected {expected_log_arity}, got {}",
                     opening.log_arity
                 )));
             }
-            let expected_coeffs = ((1usize << expected_log_arity) - 1) * ef_dim;
+            let expected_siblings = checked_pow2_usize(expected_log_arity, "FRI log_arity")? - 1;
+            let expected_coeffs = expected_siblings.checked_mul(ef_dim).ok_or_else(|| {
+                VerificationError::InvalidProofShape(format!(
+                    "query {q} phase {phase}: sibling coefficient count overflow"
+                ))
+            })?;
             if opening.sibling_coefficients.len() != expected_coeffs {
                 return Err(VerificationError::InvalidProofShape(format!(
                     "query {q} phase {phase}: sibling coefficient count must be \
@@ -1509,7 +1553,8 @@ where
             )
         })?;
 
-    let expected_final_poly_len = 1 << log_final_poly_len;
+    let expected_final_poly_len =
+        checked_pow2_usize(log_final_poly_len, "FRI final polynomial log-length")?;
     let actual_final_poly_len = fri_proof_targets.final_poly.len();
 
     if actual_final_poly_len != expected_final_poly_len {
@@ -1523,7 +1568,16 @@ where
     let mut cumulative_bits = Vec::with_capacity(num_phases + 1);
     cumulative_bits.push(0usize);
     for &la in log_arities {
-        cumulative_bits.push(cumulative_bits.last().unwrap() + la);
+        let next = cumulative_bits
+            .last()
+            .copied()
+            .and_then(|prev| prev.checked_add(la))
+            .ok_or_else(|| {
+                VerificationError::InvalidProofShape(
+                    "FRI cumulative log_arity overflow".to_string(),
+                )
+            })?;
+        cumulative_bits.push(next);
     }
 
     // Precompute the folded height after each phase for roll-in mapping.

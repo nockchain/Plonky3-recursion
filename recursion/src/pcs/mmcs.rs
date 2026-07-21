@@ -10,7 +10,6 @@ use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeField64, TwoAdicFie
 use p3_fri::FriProof;
 use p3_matrix::Dimensions;
 use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
-use p3_util::log2_strict_usize;
 
 use crate::Target;
 
@@ -285,6 +284,42 @@ where
         .collect()
 }
 
+fn checked_cap_height(
+    commitment_cap: &[Vec<Target>],
+    index_bits_len: usize,
+    expected_entry_len: usize,
+) -> Result<usize, CircuitBuilderError> {
+    if commitment_cap.is_empty() {
+        return Err(CircuitBuilderError::InvalidMerkleCap {
+            details: "empty commitment cap".into(),
+        });
+    }
+    if !commitment_cap.len().is_power_of_two() {
+        return Err(CircuitBuilderError::InvalidMerkleCap {
+            details: format!(
+                "commitment cap entry count {} is not a power of two",
+                commitment_cap.len()
+            ),
+        });
+    }
+    for entry in commitment_cap {
+        if entry.len() != expected_entry_len {
+            return Err(CircuitBuilderError::InvalidDimension {
+                expected: expected_entry_len,
+                actual: entry.len(),
+            });
+        }
+    }
+    let cap_height = commitment_cap.len().trailing_zeros() as usize;
+    if cap_height > index_bits_len {
+        return Err(CircuitBuilderError::InvalidMerkleCap {
+            details: format!(
+                "commitment cap height {cap_height} exceeds index bit length {index_bits_len}"
+            ),
+        });
+    }
+    Ok(cap_height)
+}
 /// Recursive version of `MerkleTreeMmcs::verify_batch`. Adds a circuit that verifies an opened
 /// batch of rows with respect to a given commitment (Merkle cap).
 ///
@@ -346,17 +381,11 @@ where
         });
     }
 
-    assert!(
-        !commitment_cap.is_empty(),
-        "commitment cap must have at least one entry"
-    );
-
-    // Derive cap_height from commitment size: cap has 2^cap_height entries
-    let cap_height = if commitment_cap.len() == 1 {
-        0
-    } else {
-        log2_strict_usize(commitment_cap.len())
-    };
+    let cap_height = checked_cap_height(
+        commitment_cap,
+        index_bits.len(),
+        permutation_config.digest_ext(),
+    )?;
 
     let max_height_log = index_bits.len();
     let path_depth = max_height_log - cap_height;
@@ -461,16 +490,11 @@ where
         });
     }
 
-    assert!(
-        !commitment_cap.is_empty(),
-        "commitment cap must have at least one entry"
-    );
-
-    let cap_height = if commitment_cap.len() == 1 {
-        0
-    } else {
-        log2_strict_usize(commitment_cap.len())
-    };
+    let cap_height = checked_cap_height(
+        commitment_cap,
+        index_bits.len(),
+        permutation_config.digest_ext(),
+    )?;
 
     let max_height_log = index_bits.len();
     let path_depth = max_height_log - cap_height;
@@ -1095,10 +1119,11 @@ fn arity4_prepare<EF: Field>(
         });
     }
 
-    assert!(
-        !commitment_cap.is_empty(),
-        "commitment cap must have at least one entry"
-    );
+    let cap_log2 = checked_cap_height(
+        commitment_cap,
+        index_bits.len(),
+        permutation_config.capacity_ext(),
+    )?;
 
     let mut heights_tallest_first = dimensions
         .iter()
@@ -1130,11 +1155,6 @@ fn arity4_prepare<EF: Field>(
     }
 
     let num_roots = commitment_cap.len();
-    let cap_log2 = if num_roots == 1 {
-        0
-    } else {
-        log2_strict_usize(num_roots)
-    };
 
     let leaf_rows = arity4_leaf_rows(dimensions, max_height);
     let schedule = arity4_path_schedule(dimensions, max_height, num_roots);
@@ -1958,6 +1978,194 @@ mod test {
         // Height 8 -> log_max_height = 3; cap_height = 3 makes the cap cover every leaf.
         let mat = RowMajorMatrix::<F>::rand(&mut rng, 8, 3);
         test_lifted_openings_with_cap_height(vec![mat], 3);
+    }
+
+    fn cap_entry(builder: &mut CircuitBuilder<CF>, len: usize) -> Vec<Target> {
+        (0..len).map(|_| builder.define_const(CF::ZERO)).collect()
+    }
+
+    #[test]
+    fn binary_mmcs_rejects_malformed_caps_without_panicking() {
+        let permutation_config = Poseidon2Config::KOALA_BEAR_D4_W16;
+        let dimensions = vec![Dimensions {
+            height: 4,
+            width: 1,
+        }];
+
+        let mut builder = CircuitBuilder::<CF>::new();
+        let directions = builder.alloc_public_inputs(2, "directions");
+        let opened = vec![vec![builder.public_input()]];
+        let empty = verify_batch_circuit::<F, CF>(
+            &mut builder,
+            permutation_config,
+            &[],
+            &dimensions,
+            &directions,
+            &opened,
+            None,
+        )
+        .expect_err("empty caps are rejected");
+        assert!(matches!(
+            empty,
+            CircuitBuilderError::InvalidMerkleCap { .. }
+        ));
+
+        let mut builder = CircuitBuilder::<CF>::new();
+        let directions = builder.alloc_public_inputs(2, "directions");
+        let opened = vec![vec![builder.public_input()]];
+        let rate_ext = permutation_config.digest_ext();
+        let cap = vec![
+            cap_entry(&mut builder, rate_ext),
+            cap_entry(&mut builder, rate_ext),
+            cap_entry(&mut builder, rate_ext),
+        ];
+        let non_power_two = verify_batch_circuit::<F, CF>(
+            &mut builder,
+            permutation_config,
+            &cap,
+            &dimensions,
+            &directions,
+            &opened,
+            None,
+        )
+        .expect_err("non-power-of-two caps are rejected");
+        assert!(matches!(
+            non_power_two,
+            CircuitBuilderError::InvalidMerkleCap { .. }
+        ));
+
+        let mut builder = CircuitBuilder::<CF>::new();
+        let directions = builder.alloc_public_inputs(2, "directions");
+        let opened = vec![vec![builder.public_input()]];
+        let cap = (0..8)
+            .map(|_| cap_entry(&mut builder, rate_ext))
+            .collect::<Vec<_>>();
+        let too_tall = verify_batch_circuit::<F, CF>(
+            &mut builder,
+            permutation_config,
+            &cap,
+            &dimensions,
+            &directions,
+            &opened,
+            None,
+        )
+        .expect_err("caps taller than the index are rejected");
+        assert!(matches!(
+            too_tall,
+            CircuitBuilderError::InvalidMerkleCap { .. }
+        ));
+
+        let mut builder = CircuitBuilder::<CF>::new();
+        let directions = builder.alloc_public_inputs(2, "directions");
+        let opened = vec![vec![builder.public_input()]];
+        let cap = vec![cap_entry(&mut builder, rate_ext - 1)];
+        let wrong_len = verify_batch_circuit::<F, CF>(
+            &mut builder,
+            permutation_config,
+            &cap,
+            &dimensions,
+            &directions,
+            &opened,
+            None,
+        )
+        .expect_err("cap entry digest length is checked");
+        assert!(matches!(
+            wrong_len,
+            CircuitBuilderError::InvalidDimension {
+                expected,
+                actual
+            } if expected == rate_ext && actual == rate_ext - 1
+        ));
+    }
+
+    #[test]
+    fn arity4_mmcs_rejects_malformed_caps_without_panicking() {
+        let permutation_config = Poseidon2Config::KOALA_BEAR_D4_W32;
+        let dimensions = vec![Dimensions {
+            height: 4,
+            width: 1,
+        }];
+
+        let mut builder = CircuitBuilder::<CF>::new();
+        let directions = builder.alloc_public_inputs(2, "directions");
+        let opened = vec![vec![builder.public_input()]];
+        let empty = verify_batch_circuit_arity4::<F, CF>(
+            &mut builder,
+            permutation_config,
+            &[],
+            &dimensions,
+            &directions,
+            &opened,
+        )
+        .expect_err("empty caps are rejected");
+        assert!(matches!(
+            empty,
+            CircuitBuilderError::InvalidMerkleCap { .. }
+        ));
+
+        let mut builder = CircuitBuilder::<CF>::new();
+        let directions = builder.alloc_public_inputs(2, "directions");
+        let opened = vec![vec![builder.public_input()]];
+        let capacity_ext = permutation_config.capacity_ext();
+        let cap = vec![
+            cap_entry(&mut builder, capacity_ext),
+            cap_entry(&mut builder, capacity_ext),
+            cap_entry(&mut builder, capacity_ext),
+        ];
+        let non_power_two = verify_batch_circuit_arity4::<F, CF>(
+            &mut builder,
+            permutation_config,
+            &cap,
+            &dimensions,
+            &directions,
+            &opened,
+        )
+        .expect_err("non-power-of-two caps are rejected");
+        assert!(matches!(
+            non_power_two,
+            CircuitBuilderError::InvalidMerkleCap { .. }
+        ));
+
+        let mut builder = CircuitBuilder::<CF>::new();
+        let directions = builder.alloc_public_inputs(2, "directions");
+        let opened = vec![vec![builder.public_input()]];
+        let cap = (0..8)
+            .map(|_| cap_entry(&mut builder, capacity_ext))
+            .collect::<Vec<_>>();
+        let too_tall = verify_batch_circuit_arity4::<F, CF>(
+            &mut builder,
+            permutation_config,
+            &cap,
+            &dimensions,
+            &directions,
+            &opened,
+        )
+        .expect_err("caps taller than the index are rejected");
+        assert!(matches!(
+            too_tall,
+            CircuitBuilderError::InvalidMerkleCap { .. }
+        ));
+
+        let mut builder = CircuitBuilder::<CF>::new();
+        let directions = builder.alloc_public_inputs(2, "directions");
+        let opened = vec![vec![builder.public_input()]];
+        let cap = vec![cap_entry(&mut builder, capacity_ext + 1)];
+        let wrong_len = verify_batch_circuit_arity4::<F, CF>(
+            &mut builder,
+            permutation_config,
+            &cap,
+            &dimensions,
+            &directions,
+            &opened,
+        )
+        .expect_err("cap entry digest length is checked");
+        assert!(matches!(
+            wrong_len,
+            CircuitBuilderError::InvalidDimension {
+                expected,
+                actual
+            } if expected == capacity_ext && actual == capacity_ext + 1
+        ));
     }
 
     #[test]

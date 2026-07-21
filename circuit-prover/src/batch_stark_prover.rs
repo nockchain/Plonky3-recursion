@@ -303,10 +303,19 @@ where
 }
 
 impl<SC: StarkGenericConfig> NonPrimitiveTableEntry<SC> {
-    /// Re-check the lane-count invariant that constructors clamp, after deserialization.
+    /// Re-check the invariants that constructors and current table plugins enforce.
     pub fn validate(&self) -> Result<(), ProofMetadataError> {
+        if self.rows == 0 {
+            return Err(ProofMetadataError::ZeroNpoRows(self.op_type.clone()));
+        }
         if self.lanes == 0 {
             return Err(ProofMetadataError::ZeroNpoLanes(self.op_type.clone()));
+        }
+        if self.air_variant != AirVariant::Baseline {
+            return Err(ProofMetadataError::UnsupportedNpoAirVariant {
+                op_type: self.op_type.clone(),
+                air_variant: self.air_variant,
+            });
         }
         Ok(())
     }
@@ -340,6 +349,119 @@ where
         }
         _ => false,
     }
+}
+
+fn validate_proof_instance_counts<SC: StarkGenericConfig>(
+    proof: &BatchProof<SC>,
+) -> Result<usize, ProofMetadataError> {
+    let opened_values = proof.opened_values.instances.len();
+    let degree_bits = proof.degree_bits.len();
+    let lookup_terminals = proof.lookup_terminals.len();
+    if degree_bits != opened_values || lookup_terminals != opened_values {
+        return Err(ProofMetadataError::ProofInstanceCountMismatch {
+            opened_values,
+            degree_bits,
+            lookup_terminals,
+        });
+    }
+    Ok(opened_values)
+}
+
+fn validate_stark_common_metadata<SC: StarkGenericConfig>(
+    common: &CommonData<SC>,
+    proof_instances: Option<usize>,
+) -> Result<(), ProofMetadataError> {
+    let Some(global) = &common.preprocessed else {
+        return Ok(());
+    };
+
+    let instance_count = global.instances.len();
+    if let Some(expected) = proof_instances
+        && instance_count != expected
+    {
+        return Err(ProofMetadataError::PreprocessedInstanceCountMismatch {
+            common_instances: instance_count,
+            proof_instances: expected,
+        });
+    }
+
+    for (matrix_index, &instance) in global.matrix_to_instance.iter().enumerate() {
+        if instance >= instance_count {
+            return Err(
+                ProofMetadataError::PreprocessedMatrixToInstanceOutOfBounds {
+                    matrix_index,
+                    instance,
+                    instance_count,
+                },
+            );
+        }
+        let Some(meta) = global.instances[instance].as_ref() else {
+            return Err(ProofMetadataError::PreprocessedMissingInstanceMeta {
+                matrix_index,
+                instance,
+            });
+        };
+        if meta.matrix_index != matrix_index {
+            return Err(ProofMetadataError::PreprocessedMatrixIndexMismatch {
+                instance,
+                expected: matrix_index,
+                got: meta.matrix_index,
+            });
+        }
+    }
+
+    let matrix_count = global.matrix_to_instance.len();
+    for (instance, meta) in global.instances.iter().enumerate() {
+        let Some(meta) = meta.as_ref() else {
+            continue;
+        };
+        if meta.matrix_index >= matrix_count {
+            return Err(ProofMetadataError::PreprocessedMatrixIndexOutOfBounds {
+                instance,
+                matrix_index: meta.matrix_index,
+                matrix_count,
+            });
+        }
+        let mapped_instance = global.matrix_to_instance[meta.matrix_index];
+        if mapped_instance != instance {
+            return Err(ProofMetadataError::PreprocessedMatrixOwnerMismatch {
+                matrix_index: meta.matrix_index,
+                expected: instance,
+                got: mapped_instance,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_non_primitive_entries<SC: StarkGenericConfig>(
+    entries: &[NonPrimitiveTableEntry<SC>],
+) -> Result<(), ProofMetadataError> {
+    let mut seen = BTreeMap::<NpoTypeId, usize>::new();
+    for (index, entry) in entries.iter().enumerate() {
+        entry.validate()?;
+        if let Some(first_index) = seen.insert(entry.op_type.clone(), index) {
+            return Err(ProofMetadataError::DuplicateNpoOpType {
+                op_type: entry.op_type.clone(),
+                first_index,
+                duplicate_index: index,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn checked_public_binding_value_count(
+    binding_lanes: usize,
+    ext_degree: usize,
+) -> Result<usize, ProofMetadataError> {
+    binding_lanes.checked_mul(ext_degree).ok_or(
+        ProofMetadataError::PublicBindingValueCountOverflow {
+            binding_lanes,
+            ext_degree,
+        },
+    )
 }
 
 /// The PCS prover data for committed preprocessed traces.
@@ -753,7 +875,7 @@ where
         )));
     }
 
-    let mut out = Vec::with_capacity(public_binding_lanes * D);
+    let mut out = Vec::with_capacity(checked_public_binding_value_count(public_binding_lanes, D)?);
     for value in traces.public_trace.values.iter().take(public_binding_lanes) {
         let coeffs = value.as_basis_coefficients_slice();
         if coeffs.len() != D {
@@ -874,9 +996,8 @@ impl GoldilocksTip5BatchStarkProofMetadata {
                 packing_lanes: self.table_packing.public_binding_lanes(),
             });
         }
-        for entry in &self.non_primitives {
-            entry.validate()?;
-        }
+        validate_non_primitive_entries(&self.non_primitives)?;
+        validate_stark_common_metadata(&self.stark_common, None)?;
         Ok(())
     }
 
@@ -942,9 +1063,8 @@ impl GoldilocksBlake3BatchStarkProofMetadata {
                 packing_lanes: self.table_packing.public_binding_lanes(),
             });
         }
-        for entry in &self.non_primitives {
-            entry.validate()?;
-        }
+        validate_non_primitive_entries(&self.non_primitives)?;
+        validate_stark_common_metadata(&self.stark_common, None)?;
         Ok(())
     }
 
@@ -1085,7 +1205,10 @@ impl<'a> GoldilocksBlake3PathPrunedCompactVerifierContext<'a> {
                 "Goldilocks/BLAKE3 compact verifier context metadata/setup binding mismatch",
             )));
         }
-        let expected_public_values = self.metadata.public_binding_lanes * self.metadata.ext_degree;
+        let expected_public_values = checked_public_binding_value_count(
+            self.metadata.public_binding_lanes,
+            self.metadata.ext_degree,
+        )?;
         if self.public_values.len() != expected_public_values {
             return Err(BatchStarkProverError::Verify(format!(
                 "Goldilocks/BLAKE3 compact verifier context public values length mismatch: expected {expected_public_values}, got {}",
@@ -1141,9 +1264,9 @@ where
                 packing_lanes: self.table_packing.public_binding_lanes(),
             });
         }
-        for entry in &self.non_primitives {
-            entry.validate()?;
-        }
+        validate_non_primitive_entries(&self.non_primitives)?;
+        let proof_instances = validate_proof_instance_counts(&self.proof)?;
+        validate_stark_common_metadata(&self.stark_common, Some(proof_instances))?;
         Ok(())
     }
 }
@@ -1182,6 +1305,37 @@ pub enum ProofMetadataError {
     #[error("non-primitive table `{0:?}` lane count must be at least 1")]
     ZeroNpoLanes(NpoTypeId),
 
+    /// A non-primitive table declares no logical rows.
+    #[error("non-primitive table `{0:?}` row count must be non-zero")]
+    ZeroNpoRows(NpoTypeId),
+
+    /// A non-primitive table uses an AIR variant with no verifier implementation.
+    #[error("non-primitive table `{op_type:?}` has unsupported air_variant {air_variant:?}")]
+    UnsupportedNpoAirVariant {
+        op_type: NpoTypeId,
+        air_variant: AirVariant,
+    },
+
+    /// A non-primitive operation type appears more than once in proof metadata.
+    #[error(
+        "non-primitive op_type `{op_type:?}` appears at indices {first_index} and {duplicate_index}"
+    )]
+    DuplicateNpoOpType {
+        op_type: NpoTypeId,
+        first_index: usize,
+        duplicate_index: usize,
+    },
+
+    /// A non-primitive lane count disagrees with the verifier's table-packing rules.
+    #[error(
+        "non-primitive table `{op_type:?}` lane count mismatch: expected {expected}, got {got}"
+    )]
+    NpoLanesMismatch {
+        op_type: NpoTypeId,
+        expected: usize,
+        got: usize,
+    },
+
     /// `min_trace_height` is not a non-zero power of two.
     #[error("minimum trace height must be a non-zero power of two (got {0})")]
     BadMinTraceHeight(usize),
@@ -1202,6 +1356,77 @@ pub enum ProofMetadataError {
     PublicBindingMismatch {
         proof_lanes: usize,
         packing_lanes: usize,
+    },
+
+    /// The public-binding value count overflows `usize`.
+    #[error("public binding lanes {binding_lanes} overflow for extension degree {ext_degree}")]
+    PublicBindingValueCountOverflow {
+        binding_lanes: usize,
+        ext_degree: usize,
+    },
+
+    /// The proof's per-instance vectors disagree on the number of AIR instances.
+    #[error(
+        "proof instance count mismatch: opened_values={opened_values}, degree_bits={degree_bits}, lookup_terminals={lookup_terminals}"
+    )]
+    ProofInstanceCountMismatch {
+        opened_values: usize,
+        degree_bits: usize,
+        lookup_terminals: usize,
+    },
+
+    /// Preprocessed common data carries a different instance count from the proof.
+    #[error(
+        "preprocessed common data has {common_instances} instances, proof has {proof_instances}"
+    )]
+    PreprocessedInstanceCountMismatch {
+        common_instances: usize,
+        proof_instances: usize,
+    },
+
+    /// A preprocessed matrix maps to an instance outside the instance metadata vector.
+    #[error(
+        "preprocessed matrix {matrix_index} maps to instance {instance}, but there are {instance_count} instances"
+    )]
+    PreprocessedMatrixToInstanceOutOfBounds {
+        matrix_index: usize,
+        instance: usize,
+        instance_count: usize,
+    },
+
+    /// A preprocessed matrix maps to an instance without preprocessed metadata.
+    #[error("preprocessed matrix {matrix_index} maps to instance {instance} with no metadata")]
+    PreprocessedMissingInstanceMeta {
+        matrix_index: usize,
+        instance: usize,
+    },
+
+    /// Instance preprocessed metadata points outside the matrix mapping.
+    #[error(
+        "preprocessed instance {instance} has matrix_index {matrix_index}, but there are {matrix_count} matrices"
+    )]
+    PreprocessedMatrixIndexOutOfBounds {
+        instance: usize,
+        matrix_index: usize,
+        matrix_count: usize,
+    },
+
+    /// A matrix's index and its owning instance metadata disagree.
+    #[error(
+        "preprocessed instance {instance} metadata matrix_index mismatch: expected {expected}, got {got}"
+    )]
+    PreprocessedMatrixIndexMismatch {
+        instance: usize,
+        expected: usize,
+        got: usize,
+    },
+
+    /// A matrix mapping points to a different owner than the instance metadata.
+    #[error("preprocessed matrix {matrix_index} owner mismatch: expected {expected}, got {got}")]
+    PreprocessedMatrixOwnerMismatch {
+        matrix_index: usize,
+        expected: usize,
+        got: usize,
     },
 
     /// `ext_degree` is not one of the supported values.
@@ -2351,7 +2576,8 @@ where
         let mut pvs: Vec<Vec<Val<SC>>> =
             Vec::with_capacity(NUM_PRIMITIVE_TABLES + proof.non_primitives.len());
         pvs.resize_with(NUM_PRIMITIVE_TABLES, Vec::new);
-        let expected_public_values = proof.public_binding_lanes * D;
+        let expected_public_values =
+            checked_public_binding_value_count(proof.public_binding_lanes, D)?;
         if public_values.len() != expected_public_values {
             return Err(BatchStarkProverError::Verify(format!(
                 "public binding values length mismatch: expected {expected_public_values}, got {}",
@@ -2368,6 +2594,17 @@ where
                 ))
             })?;
             let plugin = &self.non_primitive_provers[pi];
+            let expected_lanes = packing
+                .npo_lanes(&entry.op_type)
+                .unwrap_or_else(|| plugin.lanes());
+            if entry.lanes != expected_lanes {
+                return Err(ProofMetadataError::NpoLanesMismatch {
+                    op_type: entry.op_type.clone(),
+                    expected: expected_lanes,
+                    got: entry.lanes,
+                }
+                .into());
+            }
             let air = plugin
                 .batch_air_from_table_entry(&self.config, D, proof.ext_degree as u32, entry)
                 .map_err(BatchStarkProverError::Verify)?;
@@ -2417,7 +2654,8 @@ impl BatchStarkProver<GoldilocksBlake3Config> {
                 "Goldilocks/BLAKE3 compact proof does not match canonical setup binding",
             )));
         }
-        let expected_public_values = proof.public_binding_lanes * proof.ext_degree;
+        let expected_public_values =
+            checked_public_binding_value_count(proof.public_binding_lanes, proof.ext_degree)?;
         if public_values.len() != expected_public_values {
             return Err(BatchStarkProverError::Verify(format!(
                 "Goldilocks/BLAKE3 compact public values length mismatch: expected {expected_public_values}, got {}",

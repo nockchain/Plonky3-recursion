@@ -47,6 +47,27 @@ pub struct FriProofTargets<
     pub log_arities: Vec<usize>,
 }
 
+fn checked_log_sum(log_arities: &[usize]) -> Result<usize, VerificationError> {
+    log_arities.iter().try_fold(0usize, |acc, &arity| {
+        acc.checked_add(arity).ok_or_else(|| {
+            VerificationError::InvalidProofShape("FRI log_arity sum overflow".to_string())
+        })
+    })
+}
+
+fn checked_log_max_height(
+    total_log_reduction: usize,
+    log_final_poly_len: usize,
+    log_blowup: usize,
+) -> Result<usize, VerificationError> {
+    total_log_reduction
+        .checked_add(log_final_poly_len)
+        .and_then(|x| x.checked_add(log_blowup))
+        .ok_or_else(|| {
+            VerificationError::InvalidProofShape("FRI log_max_height overflow".to_string())
+        })
+}
+
 impl<
     F: Field,
     EF: ExtensionField<F>,
@@ -267,9 +288,11 @@ impl<F: Field, EF: ExtensionField<F> + BasedVectorSpace<F>, RecMmcs: RecursiveEx
 
     fn new(circuit: &mut CircuitBuilder<EF>, input: &Self::Input) -> Self {
         let log_arity = input.log_arity as usize;
-        let arity = 1usize << log_arity;
-        let num_siblings = arity - 1;
-        let num_coeffs = num_siblings * EF::DIMENSION;
+        let num_coeffs = input
+            .sibling_values
+            .len()
+            .checked_mul(EF::DIMENSION)
+            .unwrap_or(0);
         let sibling_coefficients =
             circuit.alloc_private_inputs(num_coeffs, "FRI commit phase sibling coefficients");
         let opening_proof = RecMmcs::Proof::new(circuit, &input.opening_proof);
@@ -842,12 +865,20 @@ where
                 "FRI proof has {num_queries} queries but verifier params require at least {required_num_queries}"
             )));
         }
+        if challenges.len() < 1 + num_betas {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "FRI challenge vector is too short: expected at least {}, got {}",
+                1 + num_betas,
+                challenges.len()
+            )));
+        }
 
         let alpha = challenges[0];
         let betas = &challenges[1..1 + num_betas];
 
-        let total_log_reduction: usize = opening_proof.log_arities.iter().sum();
-        let log_max_height = total_log_reduction + log_final_poly_len + log_blowup;
+        let total_log_reduction = checked_log_sum(&opening_proof.log_arities)?;
+        let log_max_height =
+            checked_log_max_height(total_log_reduction, log_final_poly_len, log_blowup)?;
 
         let max_query_index_bits = Val::<SC>::bits();
         if log_max_height > max_query_index_bits {
@@ -1249,12 +1280,20 @@ where
                 "FRI proof has {num_queries} queries but verifier params require at least {required_num_queries}"
             )));
         }
+        if challenges.len() < 1 + num_betas {
+            return Err(VerificationError::InvalidProofShape(format!(
+                "FRI challenge vector is too short: expected at least {}, got {}",
+                1 + num_betas,
+                challenges.len()
+            )));
+        }
 
         let alpha = challenges[0];
         let betas = &challenges[1..1 + num_betas];
 
-        let total_log_reduction: usize = fri_proof.log_arities.iter().sum();
-        let log_max_height = total_log_reduction + log_final_poly_len + log_blowup;
+        let total_log_reduction = checked_log_sum(&fri_proof.log_arities)?;
+        let log_max_height =
+            checked_log_max_height(total_log_reduction, log_final_poly_len, log_blowup)?;
 
         let max_query_index_bits = Val::<SC>::bits();
         if log_max_height > max_query_index_bits {
