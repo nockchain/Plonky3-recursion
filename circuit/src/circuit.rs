@@ -92,6 +92,10 @@ impl<F: Field, const D: usize> PreprocessedWriter<F> for PreprocessedColumns<F, 
         }
     }
 
+    fn is_hint_output_witness(&self, wid: WitnessId) -> bool {
+        self.hint_output_wids.contains(&wid.0)
+    }
+
     /// Extends the preprocessed data of `op_type`'s non-primitive operation
     /// with `wids`'s witness indices (D-scaled). Does NOT increment ext-field read counts.
     ///

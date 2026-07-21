@@ -311,8 +311,10 @@ where
 
     let num_rows = prep_base.len() / prep_width;
 
-    // Hint outputs have no primitive creator. Their first recompose coefficient occurrence
-    // creates the hinted witness; later occurrences are reads that must be counted here.
+    // Non-hint coefficient reads are counted while the circuit records preprocessed columns so
+    // every non-primitive creator sees them regardless of plugin order. Hint outputs have no
+    // creator table; their first recompose coefficient occurrence creates the hinted witness, and
+    // later occurrences are reads counted here.
     let mut hint_coeff_creators = HashSet::new();
     for row_idx in 0..num_rows {
         let row_start = row_idx * prep_width;
@@ -320,8 +322,8 @@ where
             let coeff_idx_val = prep_base[row_start + 2 + i * 2];
             let coeff_wid = F::as_canonical_u64(&coeff_idx_val) as usize / D;
             let coeff_wid_key = coeff_wid as u32;
-            if prep.hint_output_wids.contains(&coeff_wid_key)
-                && hint_coeff_creators.insert(coeff_wid_key)
+            if !prep.hint_output_wids.contains(&coeff_wid_key)
+                || hint_coeff_creators.insert(coeff_wid_key)
             {
                 continue;
             }

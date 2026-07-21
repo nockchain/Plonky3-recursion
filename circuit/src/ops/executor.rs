@@ -24,6 +24,11 @@ pub trait PreprocessedWriter<F: Field> {
     /// Increments the ext-field read count for each of the given witness indices.
     fn increment_ext_reads(&mut self, wids: &[WitnessId]);
 
+    /// Returns true for hint outputs that need their first table use to create the witness.
+    fn is_hint_output_witness(&self, _wid: WitnessId) -> bool {
+        false
+    }
+
     /// Extends the preprocessed data of `op_type`'s non-primitive operation
     /// with `wids`'s witness indices (D-scaled). Does NOT increment ext-field read counts.
     ///

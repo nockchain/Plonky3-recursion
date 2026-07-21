@@ -185,6 +185,9 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for RecomposeExec
         for &coeff_wid in &inputs[0] {
             preprocessed.register_non_primitive_output_index(&self.op_type, &[coeff_wid]);
             preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
+            if !preprocessed.is_hint_output_witness(coeff_wid) {
+                preprocessed.increment_ext_reads(&[coeff_wid]);
+            }
         }
 
         Ok(())
