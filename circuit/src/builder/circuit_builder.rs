@@ -400,7 +400,9 @@ where
         );
 
         let exec: Tip5PermExec<F> = Arc::new(move |input: &[F]| {
-            let arr: [F; 16] = input.try_into().expect("Tip5 D=1 input must have 16 elements");
+            let arr: [F; 16] = input
+                .try_into()
+                .expect("Tip5 D=1 input must have 16 elements");
             perm.permute(arr).to_vec()
         });
 
@@ -1295,9 +1297,9 @@ where
     /// [`Self::decompose_ext_to_base_coeffs`] on that output can return the same `coeffs`
     /// without extra witness rows (this path **does** constrain recomposition via the recompose AIR).
     ///
-    /// Uses the standard recompose AIR (no per-coefficient WitnessChecks receives). Prefer
-    /// [`Self::recompose_base_coeffs_to_ext_with_coeff_lookups`] when the coefficient targets
-    /// are read by a lower-degree Poseidon2 (e.g. D=1) after decomposition.
+    /// Uses the standard recompose AIR. The separate `recompose/coeff` table is reserved for
+    /// coefficient outputs that are also read by a lower-degree Poseidon2 (e.g. D=1) after
+    /// decomposition.
     pub fn recompose_base_coeffs_to_ext<BF>(
         &mut self,
         coeffs: &[ExprId],

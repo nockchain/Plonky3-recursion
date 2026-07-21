@@ -1,3 +1,4 @@
+extern crate std;
 use p3_baby_bear::BabyBear;
 use p3_circuit::builder::CircuitBuilder;
 use p3_circuit::ops::poseidon1_perm::{
@@ -19,8 +20,9 @@ use super::*;
 use crate::ConstraintProfile;
 use crate::batch_stark_prover::{
     BABY_BEAR_MODULUS, KOALA_BEAR_MODULUS, Poseidon1Preprocessor, Poseidon2Preprocessor,
-    poseidon1_air_builders_d5, poseidon1_table_provers_d5, poseidon2_air_builders,
-    poseidon2_air_builders_d5, poseidon2_table_provers_d5, recompose_air_builders,
+    RecomposePreprocessor, poseidon1_air_builders_d5, poseidon1_table_provers_d5,
+    poseidon2_air_builders, poseidon2_air_builders_d5, poseidon2_table_provers_d5,
+    recompose_air_builders,
 };
 use crate::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use crate::config::{self, BabyBearConfig, GoldilocksConfig, KoalaBearConfig};
@@ -89,6 +91,136 @@ fn test_babybear_batch_stark_base_field() {
             }
         ))
     ));
+}
+
+#[test]
+fn const_values_are_verifier_bound() {
+    fn build_circuit(constant: BabyBear) -> p3_circuit::Circuit<BabyBear> {
+        let mut builder = CircuitBuilder::<BabyBear>::new();
+        let x = builder.public_input();
+        let expected = builder.public_input();
+        let c = builder.define_const(constant);
+        let sum = builder.add(x, c);
+        let diff = builder.sub(sum, expected);
+        builder.assert_zero(diff);
+        builder.build().unwrap()
+    }
+
+    let verifier_circuit = build_circuit(BabyBear::from_u64(5));
+    let cfg = config::baby_bear();
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<BabyBearConfig, _, 1>(
+            &verifier_circuit,
+            &TablePacking::default(),
+            &[],
+            &[],
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+    let mut valid_runner = verifier_circuit.runner();
+    valid_runner
+        .set_public_inputs(&[BabyBear::from_u64(7), BabyBear::from_u64(12)])
+        .unwrap();
+    let valid_traces = valid_runner.run().unwrap();
+
+    let prover = BatchStarkProver::new(cfg);
+    let valid_proof = prover
+        .prove_all_tables(&valid_traces, &circuit_prover_data)
+        .unwrap();
+    prover.verify_all_tables::<BabyBear>(&valid_proof).unwrap();
+
+    let prover_circuit = build_circuit(BabyBear::from_u64(6));
+    let mut bad_runner = prover_circuit.runner();
+    bad_runner
+        .set_public_inputs(&[BabyBear::from_u64(7), BabyBear::from_u64(13)])
+        .unwrap();
+    let bad_traces = bad_runner.run().unwrap();
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        prover.prove_all_tables(&bad_traces, &circuit_prover_data)
+    })) {
+        Ok(Ok(bad_proof)) => assert!(
+            prover.verify_all_tables::<BabyBear>(&bad_proof).is_err(),
+            "verification accepted a proof generated with prover-selected ConstAir values"
+        ),
+        Ok(Err(_)) | Err(_) => {}
+    }
+}
+
+#[test]
+fn recompose_reads_existing_coefficients() {
+    const D: usize = 2;
+    type Ext2 = BinomialExtensionField<Goldilocks, D>;
+
+    fn embed(a: u64, b: u64) -> Ext2 {
+        Ext2::from_basis_coefficients_slice(&[Goldilocks::from_u64(a), Goldilocks::from_u64(b)])
+            .unwrap()
+    }
+
+    fn build_circuit(use_second_coeff: bool) -> p3_circuit::Circuit<Ext2> {
+        let mut builder = CircuitBuilder::<Ext2>::new();
+        builder.enable_recompose::<Goldilocks>(generate_recompose_trace::<Goldilocks, Ext2>);
+        let a = builder.public_input();
+        let b = builder.public_input();
+        let expected = builder.public_input();
+        let coeffs = if use_second_coeff { [a, b] } else { [a, a] };
+        let recomposed = builder
+            .recompose_base_coeffs_to_ext::<Goldilocks>(&coeffs)
+            .unwrap();
+        builder.connect(recomposed, expected);
+        builder.build().unwrap()
+    }
+
+    let verifier_circuit = build_circuit(true);
+    let cfg = config::goldilocks();
+    let preprocessors: Vec<Box<dyn NpoPreprocessor<Goldilocks>>> =
+        vec![Box::new(RecomposePreprocessor::new(false))];
+    let air_builders = recompose_air_builders::<GoldilocksConfig, D>(1, false);
+    let (airs_degrees, primitive_columns, non_primitive_columns) =
+        get_airs_and_degrees_with_prep::<GoldilocksConfig, _, D>(
+            &verifier_circuit,
+            &TablePacking::default(),
+            &preprocessors,
+            &air_builders,
+            ConstraintProfile::Standard,
+        )
+        .unwrap();
+    let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+    let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+    let circuit_prover_data =
+        CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+
+    let mut valid_runner = verifier_circuit.runner();
+    valid_runner
+        .set_public_inputs(&[embed(7, 0), embed(11, 0), embed(7, 11)])
+        .unwrap();
+    let valid_traces = valid_runner.run().unwrap();
+
+    let mut prover = BatchStarkProver::new(cfg);
+    prover.register_recompose_table::<D>(false);
+    let valid_proof = prover
+        .prove_all_tables(&valid_traces, &circuit_prover_data)
+        .unwrap();
+    prover.verify_all_tables::<Ext2>(&valid_proof).unwrap();
+
+    let prover_circuit = build_circuit(false);
+    let mut bad_runner = prover_circuit.runner();
+    bad_runner
+        .set_public_inputs(&[embed(7, 0), embed(11, 0), embed(7, 7)])
+        .unwrap();
+    let bad_traces = bad_runner.run().unwrap();
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        prover.prove_all_tables(&bad_traces, &circuit_prover_data)
+    })) {
+        Ok(Ok(bad_proof)) => assert!(
+            prover.verify_all_tables::<Ext2>(&bad_proof).is_err(),
+            "verification accepted a recompose row that ignored verifier-selected coefficient IDs"
+        ),
+        Ok(Err(_)) | Err(_) => {}
+    }
 }
 
 #[test]
@@ -1119,6 +1251,7 @@ struct PackingMirror {
     npo_lanes: Vec<(p3_circuit::ops::NpoTypeId, usize)>,
     min_trace_height: usize,
     horner_packed_steps: usize,
+    public_binding_lanes: usize,
 }
 
 impl PackingMirror {
@@ -1129,6 +1262,7 @@ impl PackingMirror {
             npo_lanes: Vec::new(),
             min_trace_height: 1,
             horner_packed_steps: 2,
+            public_binding_lanes: 0,
         }
     }
 
@@ -1166,6 +1300,19 @@ fn validate_rejects_invalid_serialized_table_packing() {
     assert_eq!(
         zero_public.into_table_packing().validate(),
         Err(ProofMetadataError::ZeroLanes("public_lanes"))
+    );
+
+    let too_many_public_bindings = PackingMirror {
+        public_lanes: 1,
+        public_binding_lanes: 2,
+        ..PackingMirror::valid()
+    };
+    assert_eq!(
+        too_many_public_bindings.into_table_packing().validate(),
+        Err(ProofMetadataError::PublicBindingExceedsLanes {
+            binding_lanes: 2,
+            public_lanes: 1,
+        })
     );
 
     let zero_alu = PackingMirror {

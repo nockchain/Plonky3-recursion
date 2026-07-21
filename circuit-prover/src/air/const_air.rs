@@ -1,70 +1,70 @@
-//! [`ConstAir`] stores constants either in the base field or the extension field (of extension degree `D`).
+//! [`ConstAir`] binds compile-time constants to verifier-owned preprocessed values.
 //!
 //! # Column layout
 //!
 //! The AIR is generic over an extension degree `D`.
-//! For each constant entry, we allocate `D + 1` base-field columns.
+//! Each constant row has `D` committed main columns and `D + 2` preprocessed columns.
 //!
-//! - `D` columns for the constant value (basis coefficients),
-//! - `1` column for the `index`: the witness-bus index of the constant.
-//!
-//! The layout for a single row is:
-//!
-//! ```text
-//!     [value[0], value[1], ..., value[D-1], index]
-//! ```
+//! - main: `value[0], value[1], ..., value[D-1]`
+//! - preprocessed: `multiplicity, index, expected[0], ..., expected[D-1]`
 //!
 //! # Constraints
 //!
-//! The AIR has no constraints.
+//! The witness bus sends the verifier-owned expected value. Committed main columns are not
+//! trusted for constant values.
 //!
 //! # Global Interactions
 //!
 //! One interaction with the global witness bus (WitnessChecks):
 //!
-//! - send `(index, value[0..D])` with multiplicity `ext_mult`
+//! - send `(index, expected[0..D])` with multiplicity `multiplicity`
 
+use alloc::vec;
 use alloc::vec::Vec;
+use core::marker::PhantomData;
 
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_circuit::tables::ConstTrace;
 use p3_field::{BasedVectorSpace, Field};
-use p3_lookup::InteractionBuilder;
+use p3_lookup::{Count, InteractionBuilder};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use tracing::instrument;
 
-use crate::air::column_layout::WITNESS_LOOKUP_PREP_LANE_WIDTH;
-use crate::air::public_air::WitnessSendAir;
-
 /// ConstAir: vector-valued constant binding with generic extension degree D.
 ///
-/// This chip exposes preprocessed constants that don't need to be committed during proving.
-/// It serves as the source of truth for constant values in the system, with each row
-/// representing a (value, index) pair where the index corresponds to a WitnessId.
-///
-/// It is the single-lane case of [`WitnessSendAir`], which it wraps for the AIR behavior.
-///
-/// Layout per row: [value[0..D-1], index] → width = D + 1
-/// - value[0..D-1]: Extension field value represented as D base field coefficients
-/// - index: Preprocessed WitnessId that this constant binds to
+/// Layout per row:
+/// - main: `[value[0..D-1]]` (prover trace, not trusted for binding)
+/// - preprocessed: `[multiplicity, index, expected[0..D-1]]`
 #[derive(Debug, Clone)]
-pub struct ConstAir<F, const D: usize = 1>(WitnessSendAir<F, D>);
+pub struct ConstAir<F, const D: usize = 1> {
+    /// Total number of logical constant rows in the trace.
+    pub num_ops: usize,
+    /// Flattened verifier-owned rows.
+    pub preprocessed: Vec<F>,
+    /// Minimum trace height for FRI compatibility.
+    pub min_height: usize,
+    _phantom: PhantomData<F>,
+}
 
 impl<F: Field, const D: usize> ConstAir<F, D> {
     /// Construct a new `ConstAir` instance.
-    ///
-    /// - `height`: The number of constant values to be exposed.
-    pub const fn new(height: usize) -> Self {
-        Self(WitnessSendAir::new(height, 1))
+    pub const fn new(num_ops: usize) -> Self {
+        Self {
+            num_ops,
+            preprocessed: Vec::new(),
+            min_height: 1,
+            _phantom: PhantomData,
+        }
     }
 
-    pub const fn new_with_preprocessed(height: usize, preprocessed: Vec<F>) -> Self {
-        Self(WitnessSendAir::new_with_preprocessed(
-            height,
-            1,
+    pub const fn new_with_preprocessed(num_ops: usize, preprocessed: Vec<F>) -> Self {
+        Self {
+            num_ops,
             preprocessed,
-        ))
+            min_height: 1,
+            _phantom: PhantomData,
+        }
     }
 
     /// Set the minimum trace height for FRI compatibility.
@@ -72,14 +72,15 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
     /// FRI requires: `log_trace_height > log_final_poly_len + log_blowup`
     /// So `min_height` should be >= `2^(log_final_poly_len + log_blowup + 1)`.
     pub const fn with_min_height(mut self, min_height: usize) -> Self {
-        self.0.min_height = min_height;
+        self.min_height = min_height;
         self
     }
 
-    /// Number of preprocessed columns: multiplicity + index.
+    /// Number of preprocessed columns: multiplicity + index + expected value.
     pub const fn preprocessed_width() -> usize {
-        WITNESS_LOOKUP_PREP_LANE_WIDTH
+        D + 2
     }
+
     /// Convert a `ConstTrace` into a `RowMajorMatrix` suitable for the STARK prover.
     ///
     /// This function is responsible for:
@@ -102,20 +103,16 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
 
         let mut values = Vec::with_capacity(height * width);
 
-        // Iterate over values and indices, populating the flat vector.
         for i in 0..height {
-            // Extract basis coefficients.
             let coeffs = trace.values[i].as_basis_coefficients_slice();
             debug_assert_eq!(
                 coeffs.len(),
                 D,
                 "extension degree mismatch for ConstTrace value"
             );
-            // Copy coefficients into the first D columns.
             values.extend_from_slice(coeffs);
         }
 
-        // Pad to power of two by repeating last row
         let mut mat = RowMajorMatrix::new(values, width);
         mat.pad_to_min_power_of_two_height(
             core::cmp::max(min_height, mat.height().next_power_of_two()),
@@ -128,23 +125,26 @@ impl<F: Field, const D: usize> ConstAir<F, D> {
 
 impl<F: Field, const D: usize> BaseAir<F> for ConstAir<F, D> {
     fn width(&self) -> usize {
-        self.0.width()
+        D
     }
 
     fn preprocessed_width(&self) -> usize {
-        self.0.preprocessed_width()
+        Self::preprocessed_width()
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
-        self.0.preprocessed_trace()
+        let width = Self::preprocessed_width();
+        let mut mat = RowMajorMatrix::from_flat_padded(self.preprocessed.to_vec(), width, F::ZERO);
+        mat.pad_to_min_power_of_two_height(self.min_height, F::ZERO);
+        Some(mat)
     }
 
     fn main_next_row_columns(&self) -> Vec<usize> {
-        self.0.main_next_row_columns()
+        vec![]
     }
 
     fn preprocessed_next_row_columns(&self) -> Vec<usize> {
-        self.0.preprocessed_next_row_columns()
+        vec![]
     }
 }
 
@@ -153,7 +153,19 @@ where
     AB::F: Field,
 {
     fn eval(&self, builder: &mut AB) {
-        self.0.eval(builder);
+        let prep = builder.preprocessed().clone();
+        let prep_local = prep.current_slice();
+
+        let multiplicity: AB::Expr = prep_local[0].into();
+        let witness_idx: AB::Expr = prep_local[1].into();
+
+        let mut fields: Vec<AB::Expr> = Vec::with_capacity(1 + D);
+        fields.push(witness_idx);
+        for j in 0..D {
+            fields.push(prep_local[2 + j].into());
+        }
+
+        builder.push_interaction("WitnessChecks", fields, Count::bounded(multiplicity, 1));
     }
 }
 
@@ -183,10 +195,11 @@ mod tests {
         // Witness IDs these constants bind to
         let const_indices = vec![WitnessId(1), WitnessId(3), WitnessId(4)];
 
-        // Preprocessed values are [ext_mult, index] pairs.
+        // Preprocessed values are [ext_mult, index, expected] rows.
         let preprocessed_values = const_indices
             .iter()
-            .flat_map(|idx| [F::ONE, F::from_u64(idx.0 as u64)])
+            .zip(const_values.iter())
+            .flat_map(|(idx, value)| [F::ONE, F::from_u64(idx.0 as u64), *value])
             .collect::<Vec<_>>();
 
         let trace = ConstTrace {
@@ -222,16 +235,22 @@ mod tests {
         assert_eq!(preprocessed_matrix.height(), height);
 
         // Assert the preprocessed values were properly created.
-        // Layout: [ext_mult, index] (width=2)
-        const_indices.iter().enumerate().for_each(|(i, const_idx)| {
-            let row = preprocessed_matrix.row_slice(i).unwrap();
-            assert_eq!(row[0], F::ONE);
-            assert_eq!(row[1], F::from_u32(const_idx.0));
-        });
+        // Layout: [ext_mult, index, expected] (width=3)
+        const_indices
+            .iter()
+            .zip([F::from_u64(37), F::from_u64(111), F::from_u64(0)])
+            .enumerate()
+            .for_each(|(i, (const_idx, value))| {
+                let row = preprocessed_matrix.row_slice(i).unwrap();
+                assert_eq!(row[0], F::ONE);
+                assert_eq!(row[1], F::from_u32(const_idx.0));
+                assert_eq!(row[2], value);
+            });
         // Check the padding row
         let last_row = preprocessed_matrix.row_slice(height - 1).unwrap();
         assert_eq!(last_row[0], F::ZERO);
         assert_eq!(last_row[1], F::ZERO);
+        assert_eq!(last_row[2], F::ZERO);
     }
 
     #[test]
@@ -255,10 +274,21 @@ mod tests {
 
         let const_values = vec![const1, const2];
         let const_indices = vec![WitnessId(10), WitnessId(20)];
-        // Preprocessed values are [ext_mult, index] pairs; indices are D-scaled.
+        // Preprocessed values are [ext_mult, index, expected[0..D]] rows; indices are D-scaled.
         let preprocessed_values = const_indices
             .iter()
-            .flat_map(|idx| [F::ONE, F::from_u64(idx.0 as u64 * 4)])
+            .zip(const_values.iter())
+            .flat_map(|(idx, value)| {
+                let coeffs = value.as_basis_coefficients_slice();
+                [
+                    F::ONE,
+                    F::from_u64(idx.0 as u64 * 4),
+                    coeffs[0],
+                    coeffs[1],
+                    coeffs[2],
+                    coeffs[3],
+                ]
+            })
             .collect::<Vec<_>>();
 
         let trace = ConstTrace {
@@ -290,21 +320,39 @@ mod tests {
 
         let air = ConstAir::<F, 4>::new_with_preprocessed(height, preprocessed_values);
         let preprocessed_matrix = air.preprocessed_trace().unwrap();
-        // Layout: [ext_mult, index] (width=2, D-scaled indices)
+        // Layout: [ext_mult, index, expected[0..D]] (width=6, D-scaled indices)
         let row0 = preprocessed_matrix.row_slice(0).unwrap();
-        assert_eq!(row0[0], F::ONE); // ext_mult
-        // D-scaled index: WitnessId(10) → 10 * 4 = 40
-        assert_eq!(row0[1], F::from_u64(40));
+        assert_eq!(
+            &*row0,
+            &[
+                F::ONE,
+                F::from_u64(40),
+                F::ONE,
+                F::TWO,
+                F::from_u64(3),
+                F::from_u64(4)
+            ]
+        );
         let last_row = preprocessed_matrix.row_slice(height - 1).unwrap();
-        assert_eq!(last_row[0], F::ONE); // ext_mult
-        // D-scaled index: WitnessId(20) → 20 * 4 = 80
-        assert_eq!(last_row[1], F::from_u64(80));
+        assert_eq!(
+            &*last_row,
+            &[
+                F::ONE,
+                F::from_u64(80),
+                F::from_u64(5),
+                F::from_u64(6),
+                F::from_u64(7),
+                F::from_u64(8),
+            ]
+        );
     }
 
     #[test]
     fn test_air_constraint_degree() {
-        // 8 ops * 2 columns per op ([ext_mult, index])
-        let air = ConstAir::<F, 1>::new_with_preprocessed(8, vec![F::ZERO; 16]);
+        let air = ConstAir::<F, 1>::new_with_preprocessed(
+            8,
+            vec![F::ZERO; 8 * ConstAir::<F, 1>::preprocessed_width()],
+        );
         p3_test_utils::assert_air_constraint_degree!(air, "ConstAir");
     }
 }

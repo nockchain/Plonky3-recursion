@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use core::any::Any;
 
 use hashbrown::{HashMap, HashSet};
-use p3_circuit::ops::{NonPrimitivePreprocessedMap, NpoTypeId, PrimitiveOpType};
+use p3_circuit::ops::{NonPrimitivePreprocessedMap, NpoTypeId, Op, PrimitiveOpType};
 use p3_circuit::{Circuit, CircuitError};
 use p3_field::{Algebra, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_uni_stark::{StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
@@ -323,12 +323,12 @@ where
             }
             PrimitiveOpType::Public => {
                 // Public preprocessed per op from circuit.rs: 1 value (D-scaled out_idx).
-                // Const is already in [ext_mult, out_idx] form because primitive tables
-                // are lowered in enum order. Only the out_idx column names creator
-                // witnesses; multiplicities can numerically collide with public indices.
+                // Const rows are [ext_mult, out_idx, expected[0..D]], so only column 1
+                // names creator witnesses.
                 let const_idx = PrimitiveOpType::Const as usize;
+                let const_width = ConstAir::<Val<SC>, D>::preprocessed_width();
                 let const_outputs = base_prep[const_idx]
-                    .chunks_exact(2)
+                    .chunks_exact(const_width)
                     .map(|chunk| chunk[1])
                     .collect::<HashSet<_>>();
                 let mut seen_public_outputs = HashSet::new();
@@ -365,18 +365,38 @@ where
             }
             PrimitiveOpType::Const => {
                 // Const preprocessed per op from circuit.rs: 1 value (D-scaled out_idx).
-                // Convert to [ext_mult, out_idx] pairs using ext_reads.
-                let mut prep_2col: Vec<Val<SC>> = Vec::with_capacity(base_prep[idx].len() * 2);
-                for &out_idx in &base_prep[idx] {
-                    let out_wid = out_idx.as_canonical_u64() as usize / D;
-                    let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
-                    prep_2col.push(<Val<SC>>::from_u32(n_reads));
-                    prep_2col.push(out_idx);
+                // Convert to [ext_mult, out_idx, expected[0..D]] rows using the circuit-owned
+                // constant values and ext_reads.
+                let const_values = circuit
+                    .ops
+                    .iter()
+                    .filter_map(|op| match op {
+                        Op::Const { val, .. } => Some(val),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                if const_values.len() != base_prep[idx].len() {
+                    return Err(CircuitError::InvalidPreprocessedValues);
                 }
 
-                let height = prep_2col.len() / 2;
-                // Store the converted 2-col format before building the AIR.
-                base_prep[idx] = prep_2col;
+                let mut prep: Vec<Val<SC>> = Vec::with_capacity(
+                    base_prep[idx].len() * ConstAir::<Val<SC>, D>::preprocessed_width(),
+                );
+                for (&out_idx, value) in base_prep[idx].iter().zip(const_values) {
+                    let out_wid = out_idx.as_canonical_u64() as usize / D;
+                    let n_reads = preprocessed.ext_reads.get(out_wid).copied().unwrap_or(0);
+                    let coeffs = value.as_basis_coefficients_slice();
+                    if coeffs.len() != D {
+                        return Err(CircuitError::InvalidPreprocessedValues);
+                    }
+                    prep.push(<Val<SC>>::from_u32(n_reads));
+                    prep.push(out_idx);
+                    prep.extend_from_slice(coeffs);
+                }
+
+                let height = base_prep[idx].len();
+                // Store the converted rows before building the AIR.
+                base_prep[idx] = prep;
                 let const_air = ConstAir::new_with_preprocessed(height, base_prep[idx].clone())
                     .with_min_height(min_height);
                 table_preps.push((CircuitTableAir::Const(const_air), compute_degree(height)));

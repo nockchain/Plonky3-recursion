@@ -2,26 +2,26 @@
 //!
 //! Each row packs D base-field witnesses into one extension-field witness.
 //! Multiple operations can be packed side-by-side as independent lanes.
-//! There are zero local constraints — correctness is enforced entirely
-//! by the output cross-table lookup on the WitnessChecks bus.
+//! WitnessChecks binds both the output witness and every coefficient witness.
 //!
 //! Circuits use two logical tables when extension degree can differ from a base-width Poseidon2:
-//! - **`recompose`**: EF output receive only (narrow preprocessed row).
-//! - **`recompose/coeff`**: per-coefficient receives for D=1-style readers (plus the EF output receive).
+//! - **`recompose`**: standard BF→EF packing.
+//! - **`recompose/coeff`**: packing rows whose coefficient outputs are also consumed directly
+//!   by lower-degree readers.
 //!
 //! # Column layout (per lane)
 //!
 //! **Main columns** (D per lane): `v_0, v_1, ..., v_{D-1}` — the base-field coefficient values.
 //!
 //! **Preprocessed columns** per lane:
-//! - Always: `output_idx`, `out_mult` (2 columns).
-//! - On `recompose/coeff` only: `coeff_i_idx`, `coeff_i_mult` for each `i` (2×D extra).
+//! - `output_idx`, `out_mult`.
+//! - `coeff_i_idx`, `coeff_i_mult` for each `i`.
 //!
 //! # CTL lookups (per lane per row)
 //!
-//! **Receive** `[output_idx, v_0, ..., v_{D-1}]` with multiplicity `out_mult`
+//! **Output** `[output_idx, v_0, ..., v_{D-1}]` with multiplicity `out_mult`.
 //!
-//! **Receive (coeff)** `[coeff_i_idx, v_i, 0, ..., 0]` with multiplicity `coeff_i_mult` (×D)
+//! **Coefficient** `[coeff_i_idx, v_i, 0, ..., 0]` with multiplicity `coeff_i_mult` (×D).
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -38,16 +38,15 @@ use super::recompose_columns::{RECOMPOSE_PREP_LANE_COL_MAP, RECOMPOSE_PREP_LANE_
 
 /// AIR for the recompose (BF→EF packing) table.
 ///
-/// Zero local constraints — all correctness is via CTL bus.
+/// WitnessChecks bus interactions bind the output and coefficient witness IDs.
 #[derive(Debug, Clone)]
 pub struct RecomposeAir<F, const D: usize> {
     pub(crate) lanes: usize,
     pub(crate) preprocessed: Vec<F>,
     pub(crate) min_height: usize,
-    /// When true, D additional per-coefficient Receive lookups are registered per lane so
-    /// that NPOs consuming raw BF coefficients (e.g. a D=1 Poseidon2 challenger inside a
-    /// D>1 circuit) find them on the WitnessChecks bus.  When false, only the single EF
-    /// output lookup is registered, matching the pre-decoupling layout.
+    /// Distinguishes the standard table from the coefficient-link table at registration time.
+    /// Both tables bind their coefficient witness IDs; the coefficient-link table is used when
+    /// those witnesses are exposed to lower-degree readers after decomposition.
     pub(crate) coeff_lookups: bool,
     _phantom: PhantomData<F>,
 }
@@ -60,14 +59,9 @@ impl<F: Field + PrimeCharacteristicRing, const D: usize> RecomposeAir<F, D> {
 
     /// Preprocessed width per lane.
     ///
-    /// Without coefficient lookups: `[output_idx, out_mult]` = 2 columns.
-    /// With coefficient lookups: adds `D × (coeff_idx, coeff_mult)`.
-    pub const fn preprocessed_lane_width_for(coeff_lookups: bool) -> usize {
-        if coeff_lookups {
-            RECOMPOSE_PREP_LANE_WIDTH + 2 * D
-        } else {
-            RECOMPOSE_PREP_LANE_WIDTH
-        }
+    /// `[output_idx, out_mult] + D × [coeff_idx, coeff_mult]`.
+    pub const fn preprocessed_lane_width_for(_coeff_lookups: bool) -> usize {
+        RECOMPOSE_PREP_LANE_WIDTH + 2 * D
     }
 
     /// Preprocessed width per lane for this AIR instance.
@@ -179,27 +173,23 @@ where
             }
             builder.push_interaction("WitnessChecks", values, Count::bounded(out_mult, 1));
 
-            // Coefficient Receive lookups: only when the circuit hosts a Poseidon2 permutation
-            // whose D differs from the circuit extension degree.
-            if self.coeff_lookups {
-                for i in 0..D {
-                    let coeff_idx: AB::Expr =
-                        prep_local[prep_off + RECOMPOSE_PREP_LANE_WIDTH + i * 2].into();
-                    let coeff_mult: AB::Expr =
-                        prep_local[prep_off + RECOMPOSE_PREP_LANE_WIDTH + i * 2 + 1].into();
+            for i in 0..D {
+                let coeff_idx: AB::Expr =
+                    prep_local[prep_off + RECOMPOSE_PREP_LANE_WIDTH + i * 2].into();
+                let coeff_mult: AB::Expr =
+                    prep_local[prep_off + RECOMPOSE_PREP_LANE_WIDTH + i * 2 + 1].into();
 
-                    let mut coeff_values: Vec<AB::Expr> = Vec::with_capacity(1 + D);
-                    coeff_values.push(coeff_idx);
-                    coeff_values.push(main_local[main_off + i].into());
-                    for _ in 1..D {
-                        coeff_values.push(AB::Expr::ZERO);
-                    }
-                    builder.push_interaction(
-                        "WitnessChecks",
-                        coeff_values,
-                        Count::bounded(coeff_mult, 1),
-                    );
+                let mut coeff_values: Vec<AB::Expr> = Vec::with_capacity(1 + D);
+                coeff_values.push(coeff_idx);
+                coeff_values.push(main_local[main_off + i].into());
+                for _ in 1..D {
+                    coeff_values.push(AB::Expr::ZERO);
                 }
+                builder.push_interaction(
+                    "WitnessChecks",
+                    coeff_values,
+                    Count::bounded(coeff_mult, 1),
+                );
             }
         }
     }

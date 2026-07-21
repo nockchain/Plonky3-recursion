@@ -177,15 +177,14 @@ impl<F: Field + Send + Sync + 'static> NonPrimitiveExecutor<F> for RecomposeExec
     ) -> Result<(), CircuitError> {
         let output_wid = outputs[0][0];
 
-        // Standard table: [output_idx, out_mult]. Coeff variant adds per-coefficient pairs.
+        // Row shape: [output_idx, out_mult] followed by [coeff_idx, coeff_mult] for each input.
+        // Multiplicities are filled by the prover preprocessor after read counts are known.
         preprocessed.register_non_primitive_output_index(&self.op_type, &[output_wid]);
         preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
 
-        if self.coeff_witness_ctl {
-            for &coeff_wid in &inputs[0] {
-                preprocessed.register_non_primitive_output_index(&self.op_type, &[coeff_wid]);
-                preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
-            }
+        for &coeff_wid in &inputs[0] {
+            preprocessed.register_non_primitive_output_index(&self.op_type, &[coeff_wid]);
+            preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
         }
 
         Ok(())
@@ -507,12 +506,11 @@ mod tests {
         Arc::new(|_: &[F]| F::ZERO)
     }
 
-    /// Recompose has zero local AIR constraints; its soundness rests entirely on the
-    /// WitnessChecks CTL bus. The security-relevant code is which witness INDICES the
-    /// preprocess step advertises as bus creators (the multiplicity is a placeholder
-    /// overwritten prover-side). Pin that row shape so it cannot silently drift.
+    /// Recompose has no arithmetic AIR constraints; its soundness rests on the
+    /// WitnessChecks CTL bus. The row shape must name the output and every coefficient
+    /// witness so prover-chosen main columns cannot replace verifier-selected inputs.
     #[test]
-    fn standard_recompose_advertises_only_the_ef_output() {
+    fn standard_recompose_advertises_output_then_each_coefficient() {
         let exec = RecomposeExecutor::new(4, dummy_recompose_fn(), NpoTypeId::recompose(), false);
         let inputs = vec![vec![
             WitnessId(10),
@@ -525,7 +523,18 @@ mod tests {
         exec.preprocess(&inputs, &outputs, &mut writer).unwrap();
         assert_eq!(
             writer.events,
-            vec![Reg::OutputIndex(WitnessId(99)), Reg::Value(F::ONE)]
+            vec![
+                Reg::OutputIndex(WitnessId(99)),
+                Reg::Value(F::ONE),
+                Reg::OutputIndex(WitnessId(10)),
+                Reg::Value(F::ONE),
+                Reg::OutputIndex(WitnessId(11)),
+                Reg::Value(F::ONE),
+                Reg::OutputIndex(WitnessId(12)),
+                Reg::Value(F::ONE),
+                Reg::OutputIndex(WitnessId(13)),
+                Reg::Value(F::ONE),
+            ]
         );
     }
 

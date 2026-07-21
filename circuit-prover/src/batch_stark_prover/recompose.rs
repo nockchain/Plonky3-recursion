@@ -4,7 +4,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use p3_baby_bear::BabyBear;
 use p3_batch_stark::{StarkGenericConfig, Val};
 use p3_circuit::ops::recompose::RecomposeTrace;
@@ -95,17 +95,14 @@ impl<const D: usize> RecomposeProver<D> {
             .unwrap_or(self.lanes);
         let min_height = packing.min_trace_height();
 
-        let coeff_lookups = self.coeff_lookups;
         let prep_lane_width =
-            RecomposeAir::<Val<SC>, D>::preprocessed_lane_width_for(coeff_lookups);
+            RecomposeAir::<Val<SC>, D>::preprocessed_lane_width_for(self.coeff_lookups);
         let mut preprocessed = Val::<SC>::zero_vec(num_ops * prep_lane_width);
         for (i, row) in t.operations.iter().enumerate() {
             let base = i * prep_lane_width;
             preprocessed[base] = row.output_wid.base_field_index::<Val<SC>, D>();
-            if coeff_lookups {
-                for (j, &coeff_wid) in row.input_wids.iter().enumerate().take(D) {
-                    preprocessed[base + 2 + j * 2] = coeff_wid.base_field_index::<Val<SC>, D>();
-                }
+            for (j, &coeff_wid) in row.input_wids.iter().enumerate().take(D) {
+                preprocessed[base + 2 + j * 2] = coeff_wid.base_field_index::<Val<SC>, D>();
             }
         }
 
@@ -113,7 +110,7 @@ impl<const D: usize> RecomposeProver<D> {
             lanes,
             preprocessed,
             min_height,
-            coeff_lookups,
+            self.coeff_lookups,
         );
         let matrix = RecomposeAir::<Val<SC>, D>::trace_to_matrix(&t.operations, lanes);
 
@@ -186,10 +183,10 @@ where
 // Preprocessor
 // ============================================================================
 
-/// NpoPreprocessor for the recompose table(s).
-///
-/// Converts EF preprocessed data to BF and sets `out_mult` from `ext_reads`.
-/// When `split_coeff_tables` is true, emits separate base rows for `recompose` and `recompose/coeff`.
+/// Converts EF preprocessed data to BF and sets output/coefficient multiplicities.
+/// The standard and coefficient-link tables use the same bound row shape; the separate
+/// table IDs keep transcript/layout compatibility for callers that route decomposition
+/// coefficients to lower-degree readers.
 #[derive(Default, Clone)]
 pub struct RecomposePreprocessor {
     pub split_coeff_tables: bool,
@@ -267,7 +264,7 @@ impl NpoPreprocessor<Goldilocks> for RecomposePreprocessor {
 }
 
 fn recompose_preprocess_impl<F, EF, const D: usize>(
-    prep: &PreprocessedColumns<EF, D>,
+    prep: &mut PreprocessedColumns<EF, D>,
     split_coeff_tables: bool,
 ) -> Result<NonPrimitivePreprocessedMap<F>, CircuitError>
 where
@@ -278,13 +275,11 @@ where
     result.extend(recompose_preprocess_for_op::<F, EF, D>(
         prep,
         &NpoTypeId::recompose(),
-        false,
     )?);
     if split_coeff_tables {
         result.extend(recompose_preprocess_for_op::<F, EF, D>(
             prep,
             &NpoTypeId::recompose_with_coeff_lookups(),
-            true,
         )?);
     }
     Ok(result)
@@ -292,20 +287,18 @@ where
 
 /// Extract preprocessed rows for one recompose `NpoTypeId` and set output / coeff multiplicities.
 fn recompose_preprocess_for_op<F, EF, const D: usize>(
-    prep: &PreprocessedColumns<EF, D>,
+    prep: &mut PreprocessedColumns<EF, D>,
     op_type: &NpoTypeId,
-    coeff_lookups: bool,
 ) -> Result<NonPrimitivePreprocessedMap<F>, CircuitError>
 where
     F: StarkField + PrimeField64,
     EF: Field + ExtensionField<F> + 'static,
 {
-    let ef_data = match prep.non_primitive.get(op_type) {
-        Some(d) if !d.is_empty() => d,
-        _ => return Ok(HashMap::new()),
+    let Some(ef_data) = prep.non_primitive.get(op_type).filter(|d| !d.is_empty()) else {
+        return Ok(HashMap::new());
     };
 
-    let prep_width = if coeff_lookups { 2 + 2 * D } else { 2 };
+    let prep_width = 2 + 2 * D;
 
     let mut prep_base: Vec<F> = ef_data
         .iter()
@@ -316,9 +309,32 @@ where
         return Err(CircuitError::InvalidPreprocessedValues);
     }
 
-    let neg_one = F::ZERO - F::ONE;
     let num_rows = prep_base.len() / prep_width;
 
+    // Hint outputs have no primitive creator. Their first recompose coefficient occurrence
+    // creates the hinted witness; later occurrences are reads that must be counted here.
+    let mut hint_coeff_creators = HashSet::new();
+    for row_idx in 0..num_rows {
+        let row_start = row_idx * prep_width;
+        for i in 0..D {
+            let coeff_idx_val = prep_base[row_start + 2 + i * 2];
+            let coeff_wid = F::as_canonical_u64(&coeff_idx_val) as usize / D;
+            let coeff_wid_key = coeff_wid as u32;
+            if prep.hint_output_wids.contains(&coeff_wid_key)
+                && hint_coeff_creators.insert(coeff_wid_key)
+            {
+                continue;
+            }
+            if coeff_wid >= prep.ext_reads.len() {
+                prep.ext_reads.resize(coeff_wid + 1, 0);
+            }
+            prep.ext_reads[coeff_wid] += 1;
+        }
+    }
+
+    let neg_one = F::ZERO - F::ONE;
+
+    let mut hint_coeff_creators = HashSet::new();
     for row_idx in 0..num_rows {
         let row_start = row_idx * prep_width;
 
@@ -338,17 +354,18 @@ where
             prep_base[row_start + 1] = F::from_u32(n_reads);
         }
 
-        if coeff_lookups {
-            for i in 0..D {
-                let coeff_idx_val = prep_base[row_start + 2 + i * 2];
-                let coeff_wid = F::as_canonical_u64(&coeff_idx_val) as usize / D;
-                let n_coeff_reads = if prep.hint_output_wids.contains(&(coeff_wid as u32)) {
-                    prep.ext_reads.get(coeff_wid).copied().unwrap_or(0)
-                } else {
-                    0
-                };
-                prep_base[row_start + 2 + i * 2 + 1] = F::from_u32(n_coeff_reads);
-            }
+        for i in 0..D {
+            let coeff_idx_val = prep_base[row_start + 2 + i * 2];
+            let coeff_wid = F::as_canonical_u64(&coeff_idx_val) as usize / D;
+            let coeff_wid_key = coeff_wid as u32;
+            let coeff_mult = if prep.hint_output_wids.contains(&coeff_wid_key)
+                && hint_coeff_creators.insert(coeff_wid_key)
+            {
+                F::from_u32(prep.ext_reads.get(coeff_wid).copied().unwrap_or(0))
+            } else {
+                neg_one
+            };
+            prep_base[row_start + 2 + i * 2 + 1] = coeff_mult;
         }
     }
 

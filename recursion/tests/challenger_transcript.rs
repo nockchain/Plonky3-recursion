@@ -1516,7 +1516,18 @@ mod koala_bear_d1_poseidon1 {
 // ============================================================================
 
 mod goldilocks_d2 {
+    use p3_batch_stark::ProverData;
     use p3_circuit::ops::GoldilocksD2Width8;
+    use p3_circuit_prover::batch_stark_prover::{
+        poseidon2_air_builders_d2, recompose_air_builders,
+    };
+    use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
+    use p3_circuit_prover::config::{self, GoldilocksConfig};
+    use p3_circuit_prover::{
+        BatchStarkProver, CircuitProverData, ConstraintProfile, Poseidon2Preprocessor,
+        RecomposePreprocessor, TablePacking,
+    };
+    use p3_field::BasedVectorSpace;
     use p3_test_utils::goldilocks_params::*;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
@@ -1543,6 +1554,99 @@ mod goldilocks_d2 {
 
     const fn new_challenger() -> CircuitChallenger<WIDTH, RATE, Poseidon2Config> {
         CircuitChallenger::new_goldilocks()
+    }
+
+    fn sample_ext_circuit(use_second_coeff: bool) -> p3_circuit::Circuit<EF> {
+        let mut circuit = setup_circuit();
+        let mut cc = new_challenger();
+
+        for i in 0..RATE {
+            let val = F::from_u64(i as u64 + 300);
+            let t = circuit.define_const(EF::from(val));
+            RecursiveChallenger::<F, EF>::observe(&mut cc, &mut circuit, t);
+        }
+
+        let sample = if use_second_coeff {
+            RecursiveChallenger::<F, EF>::sample_ext(&mut cc, &mut circuit)
+        } else {
+            let c0 = RecursiveChallenger::<F, EF>::sample(&mut cc, &mut circuit);
+            let c1 = RecursiveChallenger::<F, EF>::sample(&mut cc, &mut circuit);
+            let _ = c1;
+            circuit
+                .recompose_base_coeffs_to_ext::<F>(&[c0, c0])
+                .expect("recompose should succeed")
+        };
+
+        let expected = circuit.public_input();
+        circuit.connect(sample, expected);
+        circuit.build().expect("circuit should build")
+    }
+
+    fn sample_ext_expected(use_second_coeff: bool) -> EF {
+        let perm = make_perm();
+        let mut native = DuplexChallenger::<F, _, WIDTH, RATE>::new(perm);
+        for i in 0..RATE {
+            native.observe(F::from_u64(i as u64 + 300));
+        }
+        let c0: F = native.sample();
+        let c1: F = native.sample();
+        let second = if use_second_coeff { c1 } else { c0 };
+        EF::from_basis_coefficients_slice(&[c0, second]).unwrap()
+    }
+
+    #[test]
+    fn circuit_challenger_sample_ext_is_bound_to_base_samples() {
+        let verifier_circuit = sample_ext_circuit(true);
+        let cfg = config::goldilocks();
+        let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
+            Box::new(Poseidon2Preprocessor),
+            Box::new(RecomposePreprocessor::default()),
+        ];
+        let mut air_builders = poseidon2_air_builders_d2::<GoldilocksConfig>();
+        air_builders.extend(recompose_air_builders::<GoldilocksConfig, 2>(1, false));
+        let (airs_degrees, primitive_columns, non_primitive_columns) =
+            get_airs_and_degrees_with_prep::<GoldilocksConfig, _, 2>(
+                &verifier_circuit,
+                &TablePacking::default(),
+                &npo_prep,
+                &air_builders,
+                ConstraintProfile::Standard,
+            )
+            .unwrap();
+        let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
+        let prover_data = ProverData::from_airs_and_degrees(&cfg, &airs, &degrees);
+        let circuit_prover_data =
+            CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
+
+        let mut valid_runner = verifier_circuit.runner();
+        valid_runner
+            .set_public_inputs(&[sample_ext_expected(true)])
+            .unwrap();
+        let valid_traces = valid_runner.run().unwrap();
+
+        let mut prover = BatchStarkProver::new(cfg);
+        prover.register_poseidon2_table::<2>(Poseidon2Config::GOLDILOCKS_D2_W8);
+        prover.register_recompose_table::<2>(false);
+        let valid_proof = prover
+            .prove_all_tables(&valid_traces, &circuit_prover_data)
+            .unwrap();
+        prover.verify_all_tables::<EF>(&valid_proof).unwrap();
+
+        let prover_circuit = sample_ext_circuit(false);
+        let mut bad_runner = prover_circuit.runner();
+        bad_runner
+            .set_public_inputs(&[sample_ext_expected(false)])
+            .unwrap();
+        let bad_traces = bad_runner.run().unwrap();
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            prover.prove_all_tables(&bad_traces, &circuit_prover_data)
+        })) {
+            Ok(Ok(bad_proof)) => assert!(
+                prover.verify_all_tables::<EF>(&bad_proof).is_err(),
+                "verification accepted prover-selected sample_ext coefficients"
+            ),
+            Ok(Err(_)) | Err(_) => {}
+        }
     }
 
     /// Basic observe/sample transcript compatibility.

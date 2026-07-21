@@ -33,10 +33,8 @@ pub struct PreprocessedColumns<F, const D: usize> {
     pub dup_npo_outputs: HashMap<NpoTypeId, Vec<bool>>,
     /// WitnessId.0 values for all `Op::Hint` outputs in the circuit.
     ///
-    /// Used by prover preprocessors (e.g. `recompose_preprocess_impl`) to distinguish
-    /// hint-derived witnesses (which need to be created on the WitnessChecks bus by the
-    /// owning NPO table) from already-defined witnesses (e.g. Poseidon2 rate outputs that
-    /// are also passed as recompose coefficients via `sample_ext`).
+    /// Used by prover preprocessors to assign bus roles for hint-derived witnesses: a
+    /// table-specific creator must send them before later table/ALU reads can consume them.
     pub hint_output_wids: hashbrown::HashSet<u32>,
 }
 
@@ -250,11 +248,9 @@ impl<F: Field> Circuit<F> {
             self.private_input_rows.iter().map(|w| w.0).collect();
 
         // Hint output witness IDs: like private inputs, they are not emitted by any AIR
-        // table and must have their bus creator role assigned by the first ALU op that
-        // uses them.  Collect them in a pre-pass so the main loop can check membership.
-        // Also stored in `preprocessed.hint_output_wids` for use by prover preprocessors
-        // (e.g. `recompose_preprocess_impl`) that need to distinguish hint-derived witnesses
-        // from already-defined ones (e.g. Poseidon2 outputs used as recompose coefficients).
+        // table and need a later table/ALU occurrence to assign their WitnessChecks creator.
+        // Store them so prover preprocessors can distinguish first creator occurrences from
+        // subsequent reads of the same hinted witness.
         //
         // Important: when `assert_zero(x)` connects a hint output to `ExprId::ZERO`, the
         // hint output alias gets WitnessId(0), which is the Const-defined zero. We must
@@ -499,7 +495,6 @@ impl<F: Field> Circuit<F> {
             .into_iter()
             .map(|(_, idx)| idx)
             .collect();
-
 
         // Ensure ext_reads covers at least all witnesses.
         let size = self.witness_count as usize;
