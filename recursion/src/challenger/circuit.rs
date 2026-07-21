@@ -248,11 +248,8 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
     }
 
     /// Tip5 D=1 duplexing.
-    fn duplexing_base_tip5<EF>(
-        &mut self,
-        circuit: &mut CircuitBuilder<EF>,
-        tip5_config: Tip5Config,
-    ) where
+    fn duplexing_base_tip5<EF>(&mut self, circuit: &mut CircuitBuilder<EF>, tip5_config: Tip5Config)
+    where
         EF: p3_field::Field,
     {
         let new_start = !self.duplexed_once;

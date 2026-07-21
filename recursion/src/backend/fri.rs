@@ -17,8 +17,8 @@ use p3_circuit_prover::config::StarkField;
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_circuit_prover::{
     ConstraintProfile, Poseidon1Preprocessor, Poseidon1Prover, Poseidon1ProverD2,
-    Poseidon2Preprocessor, Poseidon2Prover, Poseidon2ProverD2, RecomposePreprocessor,
-    TableProver, Tip5Prover, recompose_table_provers,
+    Poseidon2Preprocessor, Poseidon2Prover, Poseidon2ProverD2, RecomposePreprocessor, TableProver,
+    Tip5Prover, recompose_table_provers,
 };
 use p3_commit::Pcs;
 use p3_field::extension::BinomiallyExtendable;
@@ -586,10 +586,7 @@ where
                     *c,
                     ConstraintProfile::Standard,
                 ))],
-                (_, _, Some(c)) => vec![Box::new(Tip5Prover::new(
-                    *c,
-                    ConstraintProfile::Standard,
-                ))],
+                (_, _, Some(c)) => vec![Box::new(Tip5Prover::new(*c, ConstraintProfile::Standard))],
                 _ => Vec::new(),
             };
             for config in self.0.extra_poseidon2_table_configs_for_degree(2) {

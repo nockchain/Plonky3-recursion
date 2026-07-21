@@ -43,9 +43,8 @@ use p3_goldilocks::Goldilocks;
 use p3_matrix::Matrix;
 use p3_tip5_circuit_air::{
     NUM_ROUNDS, TABLE_ROWS, TIP5_CIRCUIT_PREP_WIDTH, TIP5_CTL_PREP_COLS, TIP5_OUTPUT_CTL,
-    TIP5_WIDTH, Tip5CircuitAir, Tip5CircuitRow,
-    build_tip5_circuit_main_with_mmcs_bits, build_tip5_circuit_preprocessed,
-    generate_tip5_circuit_main, tip5_inputs_from_rows,
+    TIP5_WIDTH, Tip5CircuitAir, Tip5CircuitRow, build_tip5_circuit_main_with_mmcs_bits,
+    build_tip5_circuit_preprocessed, generate_tip5_circuit_main, tip5_inputs_from_rows,
 };
 use p3_uni_stark::{SymbolicExpression, SymbolicExpressionExt};
 use p3_util::log2_ceil_usize;
@@ -365,7 +364,6 @@ where
             },
         )
     }
-
 
     fn air_with_committed_preprocessed(
         &self,
