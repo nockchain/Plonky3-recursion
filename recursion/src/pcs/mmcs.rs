@@ -177,6 +177,31 @@ where
         .collect()
 }
 
+fn decompose_ext_elements_fresh<F, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    ext_elements: &[Target],
+) -> Result<Vec<Target>, CircuitBuilderError>
+where
+    F: Field + PrimeField64,
+    EF: ExtensionField<F>,
+{
+    let ext_degree = <EF as BasedVectorSpace<F>>::DIMENSION;
+    let prev_skip = circuit.set_decompose_skip_select_provenance(true);
+    let mut base_coeffs = Vec::with_capacity(ext_elements.len() * ext_degree);
+    for &t in ext_elements {
+        let coeffs = match circuit.decompose_ext_to_base_coeffs::<F>(t) {
+            Ok(coeffs) => coeffs,
+            Err(err) => {
+                circuit.set_decompose_skip_select_provenance(prev_skip);
+                return Err(err);
+            }
+        };
+        base_coeffs.extend(coeffs);
+    }
+    circuit.set_decompose_skip_select_provenance(prev_skip);
+    Ok(base_coeffs)
+}
+
 /// Hash extension field elements directly (no recompose). Use when values are already
 /// extension elements (e.g. FRI commit-phase evals). Absorbs in chunks of `rate_ext`.
 ///
@@ -198,18 +223,14 @@ where
     let ext_degree = <EF as BasedVectorSpace<F>>::DIMENSION;
 
     // For D=1 Poseidon2 in a higher-degree extension context, the native `ExtensionMmcs`
-    // flattens each EF element to D base field values before hashing. Mirror that by
-    // decomposing each element and routing coefficients through the base-coefficient path.
+    // flattens each EF element to D base field values before hashing. Fresh decomposition
+    // limbs give every lower-degree reader a WitnessChecks creator.
     if permutation_config.d() == 1 && ext_degree > 1 {
         if ext_elements.is_empty() {
             let zero = circuit.define_const(EF::ZERO);
             return Ok(vec![zero; permutation_config.rate_ext()]);
         }
-        let mut base_coeffs: Vec<Target> = Vec::with_capacity(ext_elements.len() * ext_degree);
-        for &t in ext_elements {
-            let coeffs = circuit.decompose_ext_to_base_coeffs::<F>(t)?;
-            base_coeffs.extend(coeffs);
-        }
+        let base_coeffs = decompose_ext_elements_fresh::<F, EF>(circuit, ext_elements)?;
         return add_hash_base_coeffs_overwrite::<F, EF>(
             circuit,
             permutation_config,
@@ -528,9 +549,10 @@ where
             // coefficients then appends the per-matrix base-field salt before hashing.
             let mut all_base: Vec<Target> = Vec::new();
             for &mat_idx in &mats_at_height {
-                for &ext in &opened_extension_values[mat_idx] {
-                    all_base.extend(circuit.decompose_ext_to_base_coeffs::<F>(ext)?);
-                }
+                all_base.extend(decompose_ext_elements_fresh::<F, EF>(
+                    circuit,
+                    &opened_extension_values[mat_idx],
+                )?);
                 all_base.extend(salts[mat_idx].iter().copied());
             }
             add_hash_base_coeffs_overwrite::<F, EF>(
@@ -1375,25 +1397,13 @@ where
                                 merkle_seed: bool|
      -> Result<Vec<Target>, CircuitBuilderError> {
         if flatten_to_base {
-            // Force fresh per-limb decomposition: a folded-codeword leaf value can carry EF-select
-            // provenance whose coefficient-wise expansion would leave the internal subtraction's
-            // difference limb without a `WitnessChecks` creator. Routing every limb through fresh
-            // coefficients keeps the bus balanced for the D=1 extension-opened leaf.
-            let prev_skip = circuit.set_decompose_skip_select_provenance(true);
             let mut data = Vec::new();
             for &mat_idx in mats {
-                for &t in &opened_extension_values[mat_idx] {
-                    let coeffs = circuit.decompose_ext_to_base_coeffs::<F>(t);
-                    match coeffs {
-                        Ok(c) => data.extend(c),
-                        Err(e) => {
-                            circuit.set_decompose_skip_select_provenance(prev_skip);
-                            return Err(e);
-                        }
-                    }
-                }
+                data.extend(decompose_ext_elements_fresh::<F, EF>(
+                    circuit,
+                    &opened_extension_values[mat_idx],
+                )?);
             }
-            circuit.set_decompose_skip_select_provenance(prev_skip);
             add_arity4_leaf_digest_from_base::<F, EF>(
                 circuit,
                 permutation_config,
