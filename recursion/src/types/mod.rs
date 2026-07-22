@@ -10,6 +10,7 @@ pub use proof::{
     BatchProofTargets, CommitmentTargets, CommonDataTargets, OpenedValuesTargets,
     OpenedValuesTargetsWithLookups, ProofTargets,
 };
+pub(crate) use proof::{LOOKUP_TERMINAL_COUNT_MISMATCH, lookup_terminal_count_matches};
 pub use selectors::RecursiveLagrangeSelectors;
 
 /// Canonical circuit target type used across recursive components.

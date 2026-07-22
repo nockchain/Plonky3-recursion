@@ -1099,7 +1099,7 @@ pub struct GoldilocksBlake3FriShape {
 }
 
 impl GoldilocksBlake3FriShape {
-    pub const fn johnson_bits(self) -> usize {
+    pub const fn operational_fri_bits(self) -> usize {
         self.log_blowup * self.num_queries + self.query_pow_bits
     }
 

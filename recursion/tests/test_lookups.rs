@@ -98,6 +98,99 @@ fn test_arith_lookups() {
 }
 
 #[test]
+fn generate_batch_challenges_rejects_extra_lookup_terminal() {
+    let TestCircuitProofData {
+        mut batch_stark_proof,
+        circuit_prover_data,
+        lookup_gadget,
+        config,
+        params,
+        pis,
+        ..
+    } = get_test_circuit_proof();
+    let common = circuit_prover_data.common_data();
+    let rows = batch_stark_proof.rows;
+    let packing = batch_stark_proof.table_packing.clone();
+    let native_airs = vec![
+        CircuitTablesAir::<MyConfig, TRACE_D>::Const(ConstAir::<F, TRACE_D>::new(
+            rows[PrimitiveTable::Const],
+        )),
+        CircuitTablesAir::<MyConfig, TRACE_D>::Public(PublicAir::<F, TRACE_D>::new(
+            rows[PrimitiveTable::Public],
+            packing.public_lanes(),
+        )),
+        CircuitTablesAir::<MyConfig, TRACE_D>::Alu(AluAir::<F, TRACE_D>::new(
+            rows[PrimitiveTable::Alu],
+            packing.alu_lanes(),
+        )),
+    ];
+
+    let first_terminal = batch_stark_proof.proof.lookup_terminals[0];
+    batch_stark_proof
+        .proof
+        .lookup_terminals
+        .push(first_terminal);
+
+    let err = match generate_batch_challenges(
+        &native_airs,
+        &config,
+        &batch_stark_proof.proof,
+        &pis,
+        Some(&[params.pow_bits, params.log_height_max]),
+        common,
+        &lookup_gadget,
+    ) {
+        Ok(_) => {
+            panic!("extra lookup terminal must be rejected before transcript challenge generation")
+        }
+        Err(err) => err,
+    };
+    assert!(
+        matches!(err, GenerationError::InvalidProofShape(_)),
+        "expected InvalidProofShape, got {err:?}"
+    );
+}
+
+#[test]
+fn recursive_batch_verifier_rejects_extra_lookup_terminal() {
+    let TestCircuitProofData {
+        mut batch_stark_proof,
+        circuit_prover_data,
+        lookup_gadget,
+        config,
+        params,
+        pis,
+        ..
+    } = get_test_circuit_proof();
+    let common = circuit_prover_data.common_data();
+    let first_terminal = batch_stark_proof.proof.lookup_terminals[0];
+    batch_stark_proof
+        .proof
+        .lookup_terminals
+        .push(first_terminal);
+
+    let mut circuit_builder = setup_circuit_builder();
+    let (verifier_inputs, _) = get_verifier_inputs_and_challenges(
+        &mut circuit_builder,
+        &config,
+        &params,
+        &batch_stark_proof,
+        common,
+        &pis,
+        &lookup_gadget,
+    );
+
+    let err = match verifier_inputs {
+        Ok(_) => panic!("extra lookup terminal must be rejected during recursive verifier setup"),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(err, VerificationError::InvalidProofShape(_)),
+        "expected InvalidProofShape, got {err:?}"
+    );
+}
+
+#[test]
 #[should_panic]
 fn test_wrong_multiplicities() {
     let n = 10;

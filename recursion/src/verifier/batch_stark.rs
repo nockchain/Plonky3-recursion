@@ -32,7 +32,8 @@ use crate::traits::{
     RecursivePcs,
 };
 use crate::types::{
-    BatchProofTargets, CommonDataTargets, OpenedValuesTargets, OpenedValuesTargetsWithLookups,
+    BatchProofTargets, CommonDataTargets, LOOKUP_TERMINAL_COUNT_MISMATCH, OpenedValuesTargets,
+    OpenedValuesTargetsWithLookups, lookup_terminal_count_matches,
 };
 use crate::{BatchStarkVerifierInputsBuilder, Target};
 
@@ -433,10 +434,11 @@ where
     if airs.len() != instances.len()
         || airs.len() != public_values.len()
         || airs.len() != proof_targets.degree_bits.len()
+        || !lookup_terminal_count_matches(airs.len(), lookup_terminals.len())
     {
-        return Err(VerificationError::InvalidProofShape(
-            "Mismatch between number of AIRs, instances, public values, or degree bits".to_string(),
-        ));
+        return Err(VerificationError::InvalidProofShape(format!(
+            "Mismatch between number of AIRs, instances, public values, degree bits, or lookup terminals: {LOOKUP_TERMINAL_COUNT_MISMATCH}"
+        )));
     }
 
     // `common` is consumed by per-instance indexing below (`common.lookups[i]`,

@@ -231,7 +231,7 @@ pub const GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_NUM_QUERIES: usize = 15;
 pub const GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_COMMIT_POW_BITS: usize = 0;
 pub const GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_QUERY_POW_BITS: usize = 0;
 pub const GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_CAP_HEIGHT: usize = 5;
-pub const GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_JOHNSON_BITS: usize =
+pub const GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_OPERATIONAL_BITS: usize =
     GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_BLOWUP
         * GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_NUM_QUERIES;
 
@@ -279,8 +279,8 @@ pub fn goldilocks_tip5_pure_query_60bit_with_shape_and_cap(
     cap_height: usize,
 ) -> GoldilocksTipsConfig {
     assert!(
-        log_blowup * num_queries >= GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_JOHNSON_BITS,
-        "pure-query recursive Tip5 profile must provide at least 60 Johnson bits"
+        log_blowup * num_queries >= GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_OPERATIONAL_BITS,
+        "pure-query recursive Tip5 profile must provide at least 60 operational FRI query bits"
     );
     goldilocks_tip5_with_fri_params(
         log_blowup,
@@ -368,13 +368,13 @@ mod tests {
     }
 
     #[test]
-    fn goldilocks_tip5_pure_query_profile_pins_60_johnson_bits() {
+    fn goldilocks_tip5_pure_query_profile_pins_60_operational_bits() {
         assert_eq!(
             GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_LOG_BLOWUP
                 * GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_NUM_QUERIES,
-            GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_JOHNSON_BITS
+            GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_OPERATIONAL_BITS
         );
-        assert_eq!(GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_JOHNSON_BITS, 60);
+        assert_eq!(GOLDILOCKS_TIP5_RECURSIVE_PURE_QUERY_OPERATIONAL_BITS, 60);
         let _default = goldilocks_tip5_60bit();
         let _equivalent = goldilocks_tip5_pure_query_60bit_with_shape_and_cap(5, 12, 5);
     }

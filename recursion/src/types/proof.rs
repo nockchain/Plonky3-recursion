@@ -63,6 +63,30 @@ pub struct BatchProofTargets<
     pub degree_bits: Vec<usize>,
 }
 
+pub(crate) const LOOKUP_TERMINAL_COUNT_MISMATCH: &str =
+    "lookup terminal count must equal the number of AIR instances";
+
+pub(crate) const fn lookup_terminal_count_matches(
+    n_instances: usize,
+    lookup_terminals_len: usize,
+) -> bool {
+    lookup_terminals_len == n_instances
+}
+
+#[cfg(test)]
+mod lookup_terminal_shape_tests {
+    use super::lookup_terminal_count_matches;
+
+    #[test]
+    fn lookup_terminal_count_matches_air_instances() {
+        assert!(lookup_terminal_count_matches(1, 1));
+        assert!(lookup_terminal_count_matches(3, 3));
+        assert!(!lookup_terminal_count_matches(1, 0));
+        assert!(!lookup_terminal_count_matches(1, 2));
+        assert!(!lookup_terminal_count_matches(3, 4));
+    }
+}
+
 /// Target structure for STARK commitments.
 #[derive(Clone)]
 pub struct CommitmentTargets<F: Field, Comm: Recursive<F>> {

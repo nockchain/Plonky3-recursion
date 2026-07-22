@@ -14,6 +14,8 @@ use p3_lookup::{Lookup, LookupProtocol};
 use p3_uni_stark::{Domain, StarkGenericConfig, SymbolicExpression, SymbolicExpressionExt, Val};
 use thiserror::Error;
 
+use crate::types::{LOOKUP_TERMINAL_COUNT_MISMATCH, lookup_terminal_count_matches};
+
 #[derive(Debug, Error)]
 pub enum GenerationError {
     #[error("Missing parameter for challenge generation")]
@@ -100,6 +102,18 @@ where
         degree_bits,
     } = proof;
 
+    let n_instances = airs.len();
+    if all_lookups.len() != n_instances {
+        return Err(GenerationError::InvalidProofShape(
+            "lookup metadata length mismatch",
+        ));
+    }
+    if !lookup_terminal_count_matches(n_instances, lookup_terminals.len()) {
+        return Err(GenerationError::InvalidProofShape(
+            LOOKUP_TERMINAL_COUNT_MISMATCH,
+        ));
+    }
+
     // Single-terminal layout: each AIR commits exactly one terminal iff it declares any lookup.
     all_lookups
         .iter()
@@ -112,8 +126,6 @@ where
             }
             Ok(())
         })?;
-
-    let n_instances = airs.len();
     if n_instances == 0
         || opened_values.instances.len() != n_instances
         || public_values.len() != n_instances
