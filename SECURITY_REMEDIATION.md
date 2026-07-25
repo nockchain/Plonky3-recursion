@@ -14,6 +14,7 @@ PASS for the remediated AI-PoW recursion scope at these commits:
 - `58351c6` — Count recompose coefficient reads before NPO preprocessing
 - `804e550` — Decompose D1 MMCS extension leaves with fresh limbs
 - `4408be2` — Format Tip5 recursion modules
+- `74dd341` — Harden recursive lookup terminal shape
 
 ## Remediated invariants
 
@@ -43,6 +44,17 @@ Covered boundaries:
 - `recursion/src/pcs/fri/verifier.rs`
 - `recursion/src/types/proof.rs`
 - `circuit-prover/src/batch_stark_prover/packing.rs`
+
+### Batch lookup terminal shape
+
+A batch proof's lookup-terminal vector must have exactly one entry per AIR instance, and an instance carries a terminal iff it declares lookups. Both are checked before challenge generation and before recursive verifier construction, so a proof cannot drop the terminal of an instance whose lookups would not balance, nor add a terminal for a lookup-free instance to cancel another's. The cross-AIR check then requires the present terminals to sum to zero.
+
+Covered boundaries:
+
+- `recursion/src/generation.rs`
+- `recursion/src/types/proof.rs`
+- `recursion/src/verifier/batch_stark.rs`
+- `recursion/src/traits/recursive.rs`
 
 ### Tip5 recursion and MMCS binding
 
@@ -83,15 +95,25 @@ cargo +nightly-2026-04-03 test -p p3-tip5-circuit-air fixture -- --nocapture
 cargo +nightly-2026-04-03 test -p p3-recursion --test tip5_mmcs -- --nocapture
 cargo +nightly-2026-04-03 test -p p3-circuit-prover config::tests::goldilocks_tip5_pure_query -- --nocapture
 cargo +nightly-2026-04-03 test -p p3-recursion --test fibonacci_batch_stark_prover_quintic test_fibonacci_batch_verifier_quintic_koala -- --exact --nocapture
+cargo +nightly-2026-04-03 test -p p3-recursion lookup_terminal -- --nocapture
+cargo +nightly-2026-04-03 test -p p3-circuit-prover goldilocks_tip5_pure_query_profile -- --nocapture
 ```
 
 ### Plonky3 package suite
+
+The `p3-tip5-circuit-air` KATs read the 5-round golden fixture at
+`$CARGO_MANIFEST_DIR/../../ai-pow-zk/tests/fixtures/tip5_5round_golden_kat.txt`,
+i.e. they require an `ai-pow-zk` directory as a SIBLING of this checkout. In a
+layout where Nockchain is cloned whole (fixture at
+`nockchain/crates/ai-pow-zk/tests/fixtures/`), five Tip5 tests abort on a
+missing-file panic until that path resolves.
 
 ```text
 cargo +nightly-2026-04-03 test -p p3-circuit-prover -p p3-recursion -p p3-tip5-circuit-air --all-targets
 ```
 
-Result: `297 passed (30 suites)`.
+Result: `300 passed (30 suites)` at `74dd341` — the three added over `4408be2`'s
+`297` are the lookup-terminal shape tests.
 
 ### Nockchain focused AI-PoW gates
 
